@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.env
+coverage/
+*.log
+dev-server*.log
+backend/dev-store.json
+backend/uploads/

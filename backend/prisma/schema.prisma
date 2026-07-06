@@ -1,0 +1,172 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String     @id @default(cuid())
+  ci           String     @unique
+  name         String
+  email        String?    @unique
+  password     String
+  role         Role       @default(EMPLOYEE)
+  status       UserStatus @default(ACTIVE)
+  employee     Employee?
+  auditEntries AuditLog[] @relation("AuditActor")
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+}
+
+model Employee {
+  id          String     @id @default(cuid())
+  userId      String     @unique
+  user        User       @relation(fields: [userId], references: [id])
+  ci          String     @unique
+  fullName    String
+  position    String
+  department  String?
+  phone       String?
+  profilePhotoUrl String?
+  startDate   DateTime?
+  locationControlEnabled Boolean @default(false)
+  locationRadiusMeters   Int     @default(800)
+  locationPoints         Json?
+  status      UserStatus @default(ACTIVE)
+  attendances Attendance[]
+  excuses     Excuse[]
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+}
+
+model Attendance {
+  id                    String           @id @default(cuid())
+  employeeId            String
+  employee              Employee         @relation(fields: [employeeId], references: [id])
+  configurationVersionId String?
+  configurationVersion   ConfigurationVersion? @relation(fields: [configurationVersionId], references: [id])
+  attendanceDate        DateTime
+  entryTime             DateTime?
+  exitTime              DateTime?
+  entryPhotoUrl         String?
+  exitPhotoUrl          String?
+  entryLatitude         Float?
+  entryLongitude        Float?
+  entryAccuracy         Float?
+  exitLatitude          Float?
+  exitLongitude         Float?
+  exitAccuracy          Float?
+  lateMinutes           Int              @default(0)
+  status                AttendanceStatus @default(PENDING)
+  notes                 String?
+  entryObservation      String?
+  exitObservation       String?
+  justificationNote     String?
+  excuses               Excuse[]
+  createdAt             DateTime         @default(now())
+  updatedAt             DateTime         @updatedAt
+
+  @@unique([employeeId, attendanceDate])
+  @@index([attendanceDate])
+  @@index([status])
+}
+
+model ConfigurationVersion {
+  id                 String         @id @default(cuid())
+  name               String
+  validFrom          DateTime
+  validUntil         DateTime?
+  entryTime          String
+  exitTime           String
+  toleranceMinutes   Int            @default(0)
+  workDays           Int[]          @default([1, 2, 3, 4, 5])
+  isActive           Boolean        @default(true)
+  attendances        Attendance[]
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+
+  @@index([validFrom, validUntil])
+}
+
+model Holiday {
+  id          String   @id @default(cuid())
+  date        DateTime @unique
+  name        String
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model SpecialSchedule {
+  id          String   @id @default(cuid())
+  date        DateTime @unique
+  name        String
+  entryTime   String
+  exitTime    String
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Excuse {
+  id              String       @id @default(cuid())
+  employeeId      String
+  employee        Employee     @relation(fields: [employeeId], references: [id])
+  attendanceId    String?
+  attendance      Attendance?  @relation(fields: [attendanceId], references: [id])
+  requestedTime   String?
+  reason          String
+  status          ExcuseStatus @default(PENDING)
+  reviewedById    String?
+  reviewedAt      DateTime?
+  reviewNotes     String?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  @@index([employeeId, status])
+}
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  actorId     String?
+  actor       User?    @relation("AuditActor", fields: [actorId], references: [id])
+  entity      String
+  entityId    String
+  action      String
+  oldValue    Json?
+  newValue    Json?
+  reason      String?
+  createdAt   DateTime @default(now())
+
+  @@index([entity, entityId])
+  @@index([actorId])
+}
+
+enum Role {
+  ADMIN
+  EMPLOYEE
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum AttendanceStatus {
+  PENDING
+  PRESENT
+  LATE
+  ABSENT
+  JUSTIFIED
+  HOLIDAY
+  WEEKEND
+}
+
+enum ExcuseStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
