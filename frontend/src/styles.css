@@ -37,15 +37,19 @@ button:disabled {
 
 .login-page {
   min-height: 100vh;
-  display: grid;
-  place-items: center;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   padding: 24px;
+  overflow-y: auto;
   background:
     radial-gradient(circle at top left, rgba(34, 197, 94, 0.16), transparent 34%),
     linear-gradient(135deg, #0b2f35 0%, #143f48 52%, #0b252c 100%);
 }
 
 .login-panel {
+  margin: auto;
   width: min(980px, 100%);
   min-height: 560px;
   display: grid;
@@ -273,6 +277,7 @@ textarea {
 
 .app-shell {
   min-height: 100vh;
+  min-height: 100dvh;
   display: grid;
   grid-template-columns: 280px 1fr;
   background: #eef4f8;
@@ -287,6 +292,7 @@ textarea {
   position: sticky;
   top: 0;
   height: 100vh;
+  height: 100dvh;
   display: flex;
   flex-direction: column;
   gap: 22px;
@@ -575,13 +581,17 @@ textarea {
   position: fixed;
   inset: 0;
   z-index: 20;
-  display: grid;
-  place-items: center;
-  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 16px;
   background: rgba(15, 23, 42, 0.72);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .camera-modal {
+  margin: auto;
   width: min(560px, 100%);
   display: grid;
   gap: 14px;
@@ -613,6 +623,7 @@ textarea {
 
 .camera-preview {
   width: 100%;
+  max-height: 40dvh;
   aspect-ratio: 4 / 3;
   border-radius: 14px;
   background: #0f172a;
@@ -1667,27 +1678,27 @@ th {
 }
 
 .legend-ok {
-  background: rgba(34, 197, 94, 0.26);
+  background: #10b981;
 }
 
 .legend-late {
-  background: rgba(251, 146, 60, 0.34);
+  background: #f97316;
 }
 
 .legend-missing {
-  background: rgba(244, 63, 94, 0.25);
+  background: #f43f5e;
 }
 
 .legend-location {
-  background: rgba(34, 211, 238, 0.32);
+  background: #06b6d4;
 }
 
 .legend-holiday {
-  background: rgba(180, 83, 9, 0.3);
+  background: #d97706;
 }
 
 .legend-proof {
-  background: rgba(6, 182, 212, 0.26);
+  background: #3b82f6;
 }
 
 .calendar-main {
@@ -1801,38 +1812,38 @@ th {
 }
 
 .event-ok {
-  --event-bg: rgba(34, 197, 94, 0.26);
-  --event-color: #166534;
+  --event-bg: #10b981;
+  --event-color: #ffffff;
 }
 
 .event-late {
-  --event-bg: rgba(251, 146, 60, 0.34);
-  --event-color: #9a3412;
+  --event-bg: #f97316;
+  --event-color: #ffffff;
 }
 
 .event-missing {
-  --event-bg: rgba(244, 63, 94, 0.25);
-  --event-color: #be123c;
+  --event-bg: #f43f5e;
+  --event-color: #ffffff;
 }
 
 .event-location {
-  --event-bg: rgba(34, 211, 238, 0.32);
-  --event-color: #155e75;
+  --event-bg: #06b6d4;
+  --event-color: #ffffff;
 }
 
 .event-location-split {
-  background: linear-gradient(90deg, var(--event-bg) 0 50%, rgba(34, 211, 238, 0.36) 50% 100%);
-  color: #111827;
+  background: linear-gradient(90deg, #f43f5e 0 50%, #06b6d4 50% 100%);
+  color: #ffffff;
 }
 
 .event-holiday {
-  --event-bg: rgba(180, 83, 9, 0.3);
-  --event-color: #854d0e;
+  --event-bg: #d97706;
+  --event-color: #ffffff;
 }
 
 .event-proof {
-  --event-bg: rgba(6, 182, 212, 0.26);
-  --event-color: #155e75;
+  --event-bg: #3b82f6;
+  --event-color: #ffffff;
 }
 
 .empty-day {
@@ -1843,15 +1854,19 @@ th {
   position: fixed;
   inset: 0;
   z-index: 30;
-  display: grid;
-  place-items: center;
-  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 16px;
   background: rgba(15, 23, 42, 0.72);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .day-detail-modal {
+  margin: auto;
   width: min(860px, 100%);
-  max-height: min(760px, 92vh);
+  max-height: min(760px, 92dvh);
   overflow: auto;
   border-radius: 18px;
   padding: 20px;
@@ -2046,6 +2061,7 @@ th {
     z-index: 70;
     width: min(330px, calc(100vw - 58px));
     height: 100vh;
+    height: 100dvh;
     overflow-y: auto;
     transform: translateX(-100%);
     box-shadow: 18px 0 60px rgba(15, 23, 42, 0.22);
@@ -2246,8 +2262,14 @@ th {
   }
 
   .calendar-event {
-    padding: 4px 4px;
-    font-size: 10px;
+    height: auto;
+    padding: 2px 4px;
+    font-size: 8.5px;
+    line-height: 1.2;
+    margin-top: 3px;
+    border-radius: 3px;
+    white-space: normal;
+    word-wrap: break-word;
   }
 
   .login-copy,
@@ -2281,3 +2303,146 @@ th {
     grid-template-columns: 1fr;
   }
 }
+
+/* Monitoreo GPS Panel */
+.outside-area-panel {
+  margin-top: 24px;
+  background: #ffffff;
+  padding: 20px;
+  border-radius: 18px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  box-shadow: 0 4px 20px rgba(15, 23, 42, 0.02);
+}
+
+.panel-header-gps h3 {
+  margin: 0;
+  font-size: 18px;
+  color: #0b2f35;
+  font-weight: 800;
+}
+
+.panel-header-gps p {
+  margin: 4px 0 16px;
+  font-size: 13px;
+  color: #64748b;
+}
+
+.today-gps-list, .past-gps-list {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.gps-record {
+  background: #f8fafc;
+  border-left: 4px solid #cbd5e1;
+  padding: 12px 16px;
+  border-radius: 0 12px 12px 0;
+  display: grid;
+  gap: 6px;
+}
+
+.gps-record-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.gps-record-header strong {
+  font-size: 14px;
+  color: #1e293b;
+}
+
+.gps-record-time {
+  font-size: 12px;
+  color: #64748b;
+  margin-right: auto;
+}
+
+.gps-badge {
+  font-size: 11px;
+  font-weight: 800;
+  padding: 3px 8px;
+  border-radius: 6px;
+  text-transform: uppercase;
+}
+
+.status-inside {
+  background: #ecfdf5;
+  color: #065f46;
+  border: 1px solid #a7f3d0;
+}
+
+.status-outside {
+  background: #fff7ed;
+  color: #9a3412;
+  border: 1px solid #ffedd5;
+}
+
+.status-no-gps {
+  background: #fef2f2;
+  color: #991b1b;
+  border: 1px solid #fee2e2;
+}
+
+.gps-record:has(.status-outside) {
+  border-left-color: #f97316;
+}
+
+.gps-record:has(.status-inside) {
+  border-left-color: #10b981;
+}
+
+.gps-record:has(.status-no-gps) {
+  border-left-color: #ef4444;
+}
+
+.gps-record-detail {
+  font-size: 12.5px;
+  color: #475569;
+}
+
+.past-gps-toggle-container {
+  margin: 16px 0 10px;
+  border-top: 1px dashed #e2e8f0;
+  padding-top: 16px;
+}
+
+.past-gps-toggle-btn {
+  background: none;
+  border: none;
+  font-size: 14px;
+  font-weight: 700;
+  color: #0f766e;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  transition: background 150ms ease;
+}
+
+.past-gps-toggle-btn:hover {
+  background: #f1f5f9;
+}
+
+.past-alerts-count {
+  background: #f1f5f9;
+  color: #475569;
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 9999px;
+}
+
+.past-gps-list {
+  margin-top: 12px;
+  border-top: 1px solid #f1f5f9;
+  padding-top: 12px;
+}
+
+.past-record {
+  background: #fafafa;
+}
+

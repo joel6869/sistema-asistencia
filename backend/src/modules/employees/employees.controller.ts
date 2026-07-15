@@ -10,6 +10,7 @@ interface EmployeePayload {
   fullName: string;
   position: string;
   department?: string | null;
+  departamentoBolivia?: string | null;
   phone?: string | null;
   profilePhotoDataUrl?: string | null;
   role?: Role;
@@ -75,6 +76,7 @@ export async function createEmployee(req: AuthenticatedRequest & Request<unknown
   const fullName = cleanText(req.body.fullName, 120);
   const position = cleanText(req.body.position, 100);
   const department = cleanText(req.body.department, 100);
+  const departamentoBolivia = cleanText(req.body.departamentoBolivia, 100);
   const phone = cleanText(req.body.phone, 40);
 
   if (!ci || !isValidCi(ci) || !fullName || !position) {
@@ -110,6 +112,7 @@ export async function createEmployee(req: AuthenticatedRequest & Request<unknown
       fullName,
       position,
       department,
+      departamentoBolivia,
       phone,
       locationControlEnabled: Boolean(locationControlEnabled),
       locationRadiusMeters: Math.max(1, Number(locationRadiusMeters) || 800),
@@ -240,6 +243,7 @@ export async function updateEmployee(req: AuthenticatedRequest & Request<{ id: s
       fullName: requestedFullName ?? undefined,
       position: requestedPosition ?? undefined,
       department: 'department' in req.body ? cleanText(req.body.department, 100) : undefined,
+      departamentoBolivia: 'departamentoBolivia' in req.body ? cleanText(req.body.departamentoBolivia, 100) : undefined,
       phone: 'phone' in req.body ? cleanText(req.body.phone, 40) : undefined,
       profilePhotoUrl,
       locationControlEnabled:

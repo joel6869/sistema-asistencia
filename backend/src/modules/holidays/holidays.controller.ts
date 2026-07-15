@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import { writeAuditLog } from '../../lib/audit.js';
-import { getDateKey, getDayStart } from '../../lib/domain.js';
+import { getDateKey, getDayStart, getUtcDateKey } from '../../lib/domain.js';
 import { prisma } from '../../lib/prisma.js';
 import { AuthenticatedRequest, cleanText, isValidIsoDate } from '../../lib/security.js';
 
@@ -8,14 +8,16 @@ interface HolidayPayload {
   date: string;
   name: string;
   description?: string | null;
+  departments?: string[];
 }
 
-function serializeHoliday(holiday: { id: string; date: Date; name: string; description: string | null }) {
+function serializeHoliday(holiday: { id: string; date: Date; name: string; description: string | null; departments: string[] }) {
   return {
     id: holiday.id,
-    date: getDateKey(holiday.date),
+    date: getUtcDateKey(holiday.date),
     name: holiday.name,
     description: holiday.description,
+    departments: holiday.departments,
   };
 }
 
@@ -33,7 +35,7 @@ export async function listHolidays(_req: Request, res: Response) {
 }
 
 export async function saveHoliday(req: AuthenticatedRequest & Request<unknown, unknown, HolidayPayload>, res: Response) {
-  const { date } = req.body;
+  const { date, departments = [] } = req.body;
   const name = cleanText(req.body.name, 120);
   const description = cleanText(req.body.description, 300);
 
@@ -44,7 +46,7 @@ export async function saveHoliday(req: AuthenticatedRequest & Request<unknown, u
     return;
   }
 
-  const holidayDate = getDayStart(new Date(`${date}T00:00:00.000Z`));
+  const holidayDate = new Date(`${date}T00:00:00.000Z`);
   const previousHoliday = await prisma.holiday.findUnique({ where: { date: holidayDate } });
   const holiday = await prisma.holiday.upsert({
     where: {
@@ -54,10 +56,12 @@ export async function saveHoliday(req: AuthenticatedRequest & Request<unknown, u
       date: holidayDate,
       name,
       description,
+      departments,
     },
     update: {
       name,
       description,
+      departments,
     },
   });
 

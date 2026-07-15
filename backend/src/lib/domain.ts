@@ -15,8 +15,23 @@ export interface LocationPoint {
   longitude: number;
 }
 
+export function getBoliviaTime(date: Date) {
+  return new Date(date.getTime() - 4 * 60 * 60 * 1000);
+}
+
 export function getDateKey(date: Date) {
-  return date.toISOString().slice(0, 10);
+  const d = getBoliviaTime(date);
+  const year = d.getUTCFullYear();
+  const month = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(d.getUTCDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+export function getUtcDateKey(date: Date) {
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(date.getUTCDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 export function getDayStart(date: Date) {
@@ -25,10 +40,11 @@ export function getDayStart(date: Date) {
 
 export function calculateLateMinutes(date: Date, entryTime: string) {
   const [hours, minutes] = entryTime.split(':').map(Number);
-  const expected = new Date(date);
-  expected.setHours(hours, minutes, 0, 0);
+  const boliviaDate = getBoliviaTime(date);
+  const actualMinutes = boliviaDate.getUTCHours() * 60 + boliviaDate.getUTCMinutes();
+  const expectedMinutes = hours * 60 + minutes;
 
-  return Math.max(0, Math.floor((date.getTime() - expected.getTime()) / 60000));
+  return Math.max(0, actualMinutes - expectedMinutes);
 }
 
 export function serializeEmployee(employee: Employee & { user: User }) {
@@ -38,6 +54,7 @@ export function serializeEmployee(employee: Employee & { user: User }) {
     fullName: employee.fullName,
     position: employee.position,
     department: employee.department,
+    departamentoBolivia: employee.departamentoBolivia,
     phone: employee.phone,
     profilePhotoUrl: employee.profilePhotoUrl,
     locationControlEnabled: employee.locationControlEnabled,
@@ -113,7 +130,7 @@ export function serializeAttendance(attendance: AttendanceWithConfiguration) {
   return {
     id: attendance.id,
     employeeId: attendance.employeeId,
-    attendanceDate: getDateKey(attendance.attendanceDate),
+    attendanceDate: getUtcDateKey(attendance.attendanceDate),
     configuration: attendance.configurationVersion
       ? {
           entryTime: attendance.configurationVersion.entryTime,

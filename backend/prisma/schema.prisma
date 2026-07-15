@@ -1,5 +1,6 @@
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-3.0.x", "debian-openssl-1.0.x"]
 }
 
 datasource db {
@@ -29,6 +30,7 @@ model Employee {
   fullName    String
   position    String
   department  String?
+  departamentoBolivia String?
   phone       String?
   profilePhotoUrl String?
   startDate   DateTime?
@@ -96,6 +98,7 @@ model Holiday {
   date        DateTime @unique
   name        String
   description String?
+  departments String[]
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 }

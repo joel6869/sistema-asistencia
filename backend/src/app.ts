@@ -21,7 +21,19 @@ const allowedOrigins = (process.env.CORS_ORIGIN ?? '')
   .map((origin) => origin.trim())
   .filter(Boolean);
 
-app.use(helmet());
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        ...helmet.contentSecurityPolicy.getDefaultDirectives(),
+        'img-src': ["'self'", "data:", "blob:", "https://*.openstreetmap.org", "https://tile.openstreetmap.org"],
+      },
+    },
+    referrerPolicy: {
+      policy: 'strict-origin-when-cross-origin',
+    },
+  }),
+);
 app.use(
   cors({
     origin(origin, callback) {

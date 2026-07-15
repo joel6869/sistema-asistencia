@@ -61,6 +61,7 @@ export async function login(req: Request<unknown, unknown, LoginPayload>, res: R
       fullName: employee.fullName,
       position: employee.position,
       department: employee.department,
+      departamentoBolivia: employee.departamentoBolivia,
       role: employee.user.role,
       status: employee.status,
       token,

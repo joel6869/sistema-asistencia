@@ -5,6 +5,18 @@ const API_URL = import.meta.env.VITE_API_URL ?? '/api';
 const ASSET_URL = API_URL.startsWith('http') ? API_URL.replace(/\/api$/, '') : '';
 const SESSION_KEY = 'asistencia.session';
 
+const BOLIVIA_DEPARTMENTS = [
+  'La Paz',
+  'Santa Cruz',
+  'Cochabamba',
+  'Oruro',
+  'Potosí',
+  'Tarija',
+  'Chuquisaca',
+  'Beni',
+  'Pando',
+];
+
 type Role = 'ADMIN' | 'EMPLOYEE';
 type AttendanceType = 'ENTRY' | 'EXIT';
 type ViewKey = 'today' | 'history' | 'overview' | 'employees' | 'settings' | 'reports';
@@ -28,6 +40,7 @@ interface SessionUser {
   fullName: string;
   position: string;
   department: string | null;
+  departamentoBolivia?: string | null;
   role: Role;
   status: 'ACTIVE' | 'INACTIVE';
   token: string;
@@ -68,6 +81,7 @@ interface Holiday {
   date: string;
   name: string;
   description?: string | null;
+  departments?: string[];
 }
 
 interface Configuration {
@@ -110,11 +124,47 @@ interface ApiItem<T> {
 
 function formatTime(value: string | null) {
   if (!value) return 'Pendiente';
+  try {
+    if (/^\d{2}:\d{2}$/.test(value)) return value;
+    const date = new Date(value);
+    if (isNaN(date.getTime())) return value;
+    return new Intl.DateTimeFormat('es-BO', {
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(date);
+  } catch {
+    return value;
+  }
+}
 
-  return new Intl.DateTimeFormat('es-BO', {
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(new Date(value));
+function formatAuditDate(value: string | null) {
+  if (!value) return '';
+  try {
+    const date = new Date(value);
+    if (isNaN(date.getTime())) return value;
+    return new Intl.DateTimeFormat('es-BO', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(date);
+  } catch {
+    return value;
+  }
+}
+
+function formatFullDate(date: Date) {
+  try {
+    return new Intl.DateTimeFormat('es-BO', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    }).format(date);
+  } catch {
+    return date.toDateString();
+  }
 }
 
 function formatDateKey(date: Date) {
@@ -298,6 +348,42 @@ export default function App() {
 
   useEffect(() => {
     loadData().catch(() => showToast('No se pudo conectar con el backend.', 'error'));
+
+    if (!session) return;
+
+    const interval = setInterval(() => {
+      loadData().catch(() => {});
+    }, 8000);
+
+    return () => clearInterval(interval);
+  }, [session]);
+
+  useEffect(() => {
+    if (!session) return;
+
+    let timeoutId: number;
+
+    function resetInactivityTimer() {
+      window.clearTimeout(timeoutId);
+      timeoutId = window.setTimeout(() => {
+        logout();
+        showToast('Sesión cerrada automáticamente por inactividad de 10 minutos.', 'info');
+      }, 10 * 60 * 1000);
+    }
+
+    const events = ['mousemove', 'keydown', 'click', 'scroll', 'touchstart'];
+    events.forEach((event) => {
+      window.addEventListener(event, resetInactivityTimer);
+    });
+
+    resetInactivityTimer();
+
+    return () => {
+      window.clearTimeout(timeoutId);
+      events.forEach((event) => {
+        window.removeEventListener(event, resetInactivityTimer);
+      });
+    };
   }, [session]);
 
   function handleLoggedIn(user: SessionUser) {
@@ -382,9 +468,8 @@ export default function App() {
       <section className="content">
         <header className="topbar">
           <div>
-            <p>{new Intl.DateTimeFormat('es-BO', { dateStyle: 'full' }).format(new Date())}</p>
+            <p>{formatFullDate(new Date())}</p>
           </div>
-          <span className="api-pill">API conectada: {API_URL}</span>
         </header>
 
         {toast && <Toast text={toast.text} tone={toast.tone} onClose={() => setToast(null)} />}
@@ -402,7 +487,7 @@ export default function App() {
         )}
 
         {session.role === 'EMPLOYEE' && view === 'history' && (
-          <AttendanceHistory attendances={attendances} employees={employees} holidays={holidays} title="Mi historial" />
+          <AttendanceHistory attendances={attendances} employees={employees} holidays={holidays} title="Mi historial" employee={session} />
         )}
 
         {session.role === 'ADMIN' && view === 'overview' && (
@@ -479,7 +564,7 @@ function Toast({
 }
 
 function LoginScreen({ onLoggedIn }: { onLoggedIn: (user: SessionUser) => void }) {
-  const [ci, setCi] = useState('1234567');
+  const [ci, setCi] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -526,7 +611,7 @@ function LoginScreen({ onLoggedIn }: { onLoggedIn: (user: SessionUser) => void }
             />
           </div>
           <p className="brand-kicker">OAP 2026</p>
-          <h1>Asistencia del personal Encuestadores</h1>
+          <h1>Asistencia del personal Encuestador</h1>
         </div>
 
         <form className="login-form" onSubmit={submit}>
@@ -539,14 +624,6 @@ function LoginScreen({ onLoggedIn }: { onLoggedIn: (user: SessionUser) => void }
           <button className="primary-action" disabled={loading}>
             {loading ? 'Ingresando...' : 'Entrar'}
           </button>
-          <div className="demo-access">
-            <button type="button" onClick={() => setCi('1234567')}>
-              Empleado demo
-            </button>
-            <button type="button" onClick={() => setCi('0000001')}>
-              Admin demo
-            </button>
-          </div>
         </form>
       </section>
     </main>
@@ -589,7 +666,19 @@ function EmployeeToday({
     setWorking(true);
     onRegistered('Foto capturada. Obteniendo ubicacion y registrando asistencia...');
     try {
-      const location = await getBrowserLocation();
+      let location = await getBrowserLocation();
+      while (!location) {
+        const retry = window.confirm(
+          "El sistema requiere acceso a su ubicación (GPS) para registrar la asistencia.\n\nPor favor:\n1. Habilite el GPS/ubicación de su dispositivo.\n2. Conceda permiso de ubicación al navegador.\n3. Presione 'Aceptar' para reintentar."
+        );
+        if (!retry) {
+          onRegistered('Registro cancelado: Se requiere permiso de ubicación.', 'error');
+          setWorking(false);
+          return;
+        }
+        onRegistered('Reintentando obtener ubicación...');
+        location = await getBrowserLocation();
+      }
       const response = await fetch(`${API_URL}/attendances/register`, {
         method: 'POST',
         headers: authHeaders(user, { 'Content-Type': 'application/json' }),
@@ -846,12 +935,16 @@ function AdminOverview({
 }) {
   const activeEmployees = employees.filter((employee) => employee.status === 'ACTIVE');
   const [selectedEmployeeId, setSelectedEmployeeId] = useState(activeEmployees[0]?.id ?? '');
+  const [showPastAlerts, setShowPastAlerts] = useState(false);
   const selectedEmployee = employees.find((employee) => employee.id === selectedEmployeeId);
   const filteredAttendances = selectedEmployeeId
     ? attendances.filter((attendance) => attendance.employeeId === selectedEmployeeId)
     : attendances;
-  const outsideAreaAttendances = filteredAttendances.filter(hasOutsideAreaNote);
   const monthlyLateMinutes = getMonthlyLateMinutes(filteredAttendances);
+  
+  const todayKey = formatDateKey(new Date());
+  const todayRecords = filteredAttendances.filter((att) => att.attendanceDate === todayKey && att.entryTime);
+  const pastAlerts = filteredAttendances.filter((att) => att.attendanceDate < todayKey && hasOutsideAreaNote(att));
 
   useEffect(() => {
     if (!selectedEmployeeId && activeEmployees[0]) {
@@ -902,27 +995,85 @@ function AdminOverview({
         </div>
       </section>
       <section className="outside-area-panel">
-        <div>
-          <h3>Marcados fuera del area permitida</h3>
-          <p>Entradas realizadas fuera del radio configurado o sin validacion GPS.</p>
+        <div className="panel-header-gps">
+          <h3>Monitoreo de GPS</h3>
+          <p>Marcaciones de hoy y validación de rango.</p>
         </div>
-        {outsideAreaAttendances.length === 0 ? (
-          <span className="empty-alert">Sin alertas de ubicacion en esta vista.</span>
-        ) : (
-          <div className="outside-area-list">
-            {outsideAreaAttendances.slice(0, 6).map((attendance) => {
+        
+        <div className="today-gps-list">
+          {todayRecords.length === 0 ? (
+            <span className="empty-alert">Sin marcaciones registradas hoy.</span>
+          ) : (
+            todayRecords.map((attendance) => {
               const employee = employees.find((item) => item.id === attendance.employeeId);
+              const hasGps = attendance.entryLocation?.latitude && attendance.entryLocation?.longitude;
+              const isOutside = hasOutsideAreaNote(attendance);
+              
+              let statusLabel = '';
+              let statusClass = '';
+              let detailText = '';
+              
+              if (!hasGps) {
+                statusLabel = 'Sin GPS / Permiso denegado';
+                statusClass = 'status-no-gps';
+                detailText = 'No se capturaron coordenadas de ubicación para esta marca.';
+              } else if (isOutside) {
+                statusLabel = 'Fuera de rango';
+                statusClass = 'status-outside';
+                detailText = (attendance.notes ?? '').replace(/,\s*radio permitido\s*\d+\s*m/gi, '');
+              } else {
+                statusLabel = 'Dentro de rango';
+                statusClass = 'status-inside';
+                detailText = 'Ubicación validada correctamente.';
+              }
 
               return (
-                <article key={attendance.id}>
-                  <strong>{employee?.fullName ?? 'Funcionario'}</strong>
-                  <span>
-                    {attendance.attendanceDate} - {formatTime(attendance.entryTime)}
-                  </span>
-                  <small>{attendance.notes}</small>
+                <article key={attendance.id} className="gps-record">
+                  <div className="gps-record-header">
+                    <strong>{employee?.fullName ?? 'Funcionario'}</strong>
+                    <span className="gps-record-time">{formatTime(attendance.entryTime)}</span>
+                    <span className={`gps-badge ${statusClass}`}>{statusLabel}</span>
+                  </div>
+                  <small className="gps-record-detail">{detailText}</small>
                 </article>
               );
-            })}
+            })
+          )}
+        </div>
+
+        <div className="past-gps-toggle-container">
+          <button 
+            type="button"
+            className="past-gps-toggle-btn"
+            onClick={() => setShowPastAlerts(!showPastAlerts)}
+          >
+            <span>{showPastAlerts ? '▼' : '▶'} Alertas de días anteriores</span>
+            <span className="past-alerts-count">({pastAlerts.length})</span>
+          </button>
+        </div>
+
+        {showPastAlerts && (
+          <div className="past-gps-list">
+            {pastAlerts.length === 0 ? (
+              <span className="empty-alert">Sin alertas en días anteriores.</span>
+            ) : (
+              pastAlerts.map((attendance) => {
+                const employee = employees.find((item) => item.id === attendance.employeeId);
+                const cleanNotes = (attendance.notes ?? '').replace(/,\s*radio permitido\s*\d+\s*m/gi, '');
+                return (
+                  <article key={attendance.id} className="gps-record past-record">
+                    <div className="gps-record-header">
+                      <strong>{employee?.fullName ?? 'Funcionario'}</strong>
+                      <span className="gps-record-time">
+                        {attendance.attendanceDate} - {formatTime(attendance.entryTime)}
+                      </span>
+                      <span className="gps-badge status-outside">Fuera de rango</span>
+                    </div>
+                    <small className="gps-record-detail">{cleanNotes}</small>
+                  </article>
+                );
+              })
+            )}
           </div>
         )}
       </section>
@@ -935,6 +1086,7 @@ function AdminOverview({
         session={session}
         canManage
         title={selectedEmployee ? `Asistencia de ${selectedEmployee.fullName}` : 'Asistencia general'}
+        employee={selectedEmployee}
       />
     </>
   );
@@ -964,6 +1116,7 @@ function EmployeesPanel({
     fullName: '',
     position: '',
     department: '',
+    departamentoBolivia: 'La Paz',
     phone: '',
     role: 'EMPLOYEE' as Role,
     profilePhotoDataUrl: '',
@@ -985,6 +1138,7 @@ function EmployeesPanel({
       fullName: employee.fullName,
       position: employee.position,
       department: employee.department ?? '',
+      departamentoBolivia: employee.departamentoBolivia ?? 'La Paz',
       phone: employee.phone ?? '',
       role: employee.role,
       profilePhotoDataUrl: '',
@@ -1006,6 +1160,7 @@ function EmployeesPanel({
         fullName: form.fullName,
         position: form.position,
         department: form.department || null,
+        departamentoBolivia: form.departamentoBolivia || 'La Paz',
         phone: form.phone || null,
         role: form.role,
         profilePhotoDataUrl: form.profilePhotoDataUrl || null,
@@ -1048,6 +1203,17 @@ function EmployeesPanel({
         <input placeholder="Nombre completo" value={form.fullName} onChange={(event) => setForm({ ...form, fullName: event.target.value })} />
         <input placeholder="Cargo" value={form.position} onChange={(event) => setForm({ ...form, position: event.target.value })} />
         <input placeholder="Unidad o departamento" value={form.department} onChange={(event) => setForm({ ...form, department: event.target.value })} />
+        <select value={form.departamentoBolivia} onChange={(event) => setForm({ ...form, departamentoBolivia: event.target.value })}>
+          <option value="La Paz">La Paz</option>
+          <option value="Santa Cruz">Santa Cruz</option>
+          <option value="Cochabamba">Cochabamba</option>
+          <option value="Oruro">Oruro</option>
+          <option value="Potosí">Potosí</option>
+          <option value="Tarija">Tarija</option>
+          <option value="Chuquisaca">Chuquisaca</option>
+          <option value="Beni">Beni</option>
+          <option value="Pando">Pando</option>
+        </select>
         <input placeholder="Telefono" value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} />
         <select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value as Role })}>
           <option value="EMPLOYEE">Empleado</option>
@@ -1075,7 +1241,7 @@ function EmployeesPanel({
               {employee.profilePhotoUrl ? <img className="employee-avatar" src={assetUrl(employee.profilePhotoUrl)} alt="" /> : <div className="employee-avatar placeholder">{employee.fullName.slice(0, 1)}</div>}
               <div>
                 <strong>{employee.fullName}</strong>
-                <span>CI {employee.ci} - {employee.position} - {employee.role === 'ADMIN' ? 'Admin' : 'Empleado'}</span>
+                <span>CI {employee.ci} - {employee.position} ({employee.departamentoBolivia ?? 'La Paz'}) - {employee.role === 'ADMIN' ? 'Admin' : 'Empleado'}</span>
               </div>
               <div className="row-actions">
                 <button onClick={() => editEmployee(employee)}>Editar</button>
@@ -1507,6 +1673,24 @@ function SettingsPanel({
     }
   }
 
+  const [selectedDepts, setSelectedDepts] = useState<string[]>([...BOLIVIA_DEPARTMENTS]);
+  const selectAll = selectedDepts.length === BOLIVIA_DEPARTMENTS.length;
+  function handleToggleSelectAll() {
+    if (selectAll) {
+      setSelectedDepts([]);
+    } else {
+      setSelectedDepts([...BOLIVIA_DEPARTMENTS]);
+    }
+  }
+
+  function handleToggleDept(dept: string) {
+    if (selectedDepts.includes(dept)) {
+      setSelectedDepts(selectedDepts.filter(d => d !== dept));
+    } else {
+      setSelectedDepts([...selectedDepts, dept]);
+    }
+  }
+
   async function saveHoliday(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const holidayForm = event.currentTarget;
@@ -1522,6 +1706,7 @@ function SettingsPanel({
           date: formData.get('date'),
           name: formData.get('name'),
           description: formData.get('description') || null,
+          departments: selectedDepts,
         }),
       });
       const body = await response.json();
@@ -1532,6 +1717,7 @@ function SettingsPanel({
       }
 
       holidayForm.reset();
+      setSelectedDepts([...BOLIVIA_DEPARTMENTS]);
       onSaved(body.message ?? 'Feriado guardado.');
     } catch {
       setHolidayError('No se pudo conectar con el backend.');
@@ -1584,7 +1770,30 @@ function SettingsPanel({
           <input name="date" required type="date" />
           <input name="name" placeholder="Nombre del feriado" required />
           <input name="description" placeholder="Descripcion opcional" />
-          <button className="primary-action" disabled={savingHoliday}>
+          
+          <div className="holiday-departments-select" style={{ gridColumn: 'span 3', margin: '8px 0' }}>
+            <label style={{ display: 'block', margin: '4px 0 8px', fontWeight: 'bold', fontSize: '13px', color: '#1e293b' }}>
+              Departamentos de Bolivia aplicables:
+            </label>
+            <div className="holiday-departments-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: '8px', padding: '12px', background: '#f8fafc', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px', fontWeight: 'bold', color: '#0f766e' }}>
+                <input type="checkbox" checked={selectAll} onChange={handleToggleSelectAll} />
+                <span>TODOS</span>
+              </label>
+              {BOLIVIA_DEPARTMENTS.map((dept) => (
+                <label key={dept} style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '13px', color: '#334155' }}>
+                  <input
+                    type="checkbox"
+                    checked={selectedDepts.includes(dept)}
+                    onChange={() => handleToggleDept(dept)}
+                  />
+                  <span>{dept}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          <button className="primary-action" disabled={savingHoliday} style={{ gridColumn: 'span 3', width: 'fit-content', justifySelf: 'end' }}>
             {savingHoliday ? 'Guardando...' : 'Guardar feriado'}
           </button>
         </form>
@@ -1593,7 +1802,12 @@ function SettingsPanel({
           {holidays.map((holiday) => (
             <div key={holiday.id}>
               <strong>{holiday.date}</strong>
-              <span>{holiday.name}</span>
+              <span>
+                {holiday.name}{' '}
+                <small style={{ display: 'block', color: '#64748b', fontSize: '11px', marginTop: '2px' }}>
+                  Depto: {holiday.departments && holiday.departments.length > 0 ? (holiday.departments.length === 9 ? 'Todos' : holiday.departments.join(', ')) : 'Todos'}
+                </small>
+              </span>
               <button type="button" disabled={deletingHolidayId === holiday.id} onClick={() => deleteHoliday(holiday.id)}>
                 {deletingHolidayId === holiday.id ? 'Eliminando...' : 'Eliminar'}
               </button>
@@ -1763,7 +1977,7 @@ function ReportsPanel({
               <dl className="audit-grid">
                 <div>
                   <dt>Fecha/hora</dt>
-                  <dd>{new Intl.DateTimeFormat('es-BO', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(log.createdAt))}</dd>
+                  <dd>{formatAuditDate(log.createdAt)}</dd>
                 </div>
                 <div>
                   <dt>Actor</dt>
@@ -1806,7 +2020,13 @@ function getExportRows(
     .sort((a, b) => `${a.attendanceDate}${a.entryTime ?? ''}`.localeCompare(`${b.attendanceDate}${b.entryTime ?? ''}`))
     .map((attendance) => {
       const employee = employees.find((item) => item.id === attendance.employeeId);
-      const holiday = holidaysByDate.get(attendance.attendanceDate);
+      const rawHoliday = holidaysByDate.get(attendance.attendanceDate);
+      const holiday = rawHoliday && (
+        !rawHoliday.departments || 
+        rawHoliday.departments.length === 0 || 
+        rawHoliday.departments.includes('TODOS') || 
+        (employee?.departamentoBolivia && rawHoliday.departments.includes(employee.departamentoBolivia))
+      ) ? rawHoliday : null;
 
       return {
         date: attendance.attendanceDate,
@@ -1950,17 +2170,68 @@ function auditChangeSummary(log: AuditLog) {
   const previous = auditValue(log.oldValue);
   const pieces: string[] = [];
 
-  const status = next.status ?? previous.status;
-  const entryTime = next.entryTime ?? previous.entryTime;
-  const exitTime = next.exitTime ?? previous.exitTime;
-  const lateMinutes = next.lateMinutes ?? previous.lateMinutes;
-  const outsideArea = next.outsideArea;
+  // 1. Handle Attendances (REGISTER_ENTRY, REGISTER_EXIT, ADMIN_CREATE_ATTENDANCE, ADMIN_UPDATE_ATTENDANCE, etc.)
+  if (log.entity === 'Attendance' || log.action.includes('ATTENDANCE')) {
+    const status = next.status ?? previous.status;
+    const entryTime = next.entryTime ?? previous.entryTime;
+    const exitTime = next.exitTime ?? previous.exitTime;
+    const lateMinutes = next.lateMinutes ?? previous.lateMinutes;
+    const outsideArea = next.outsideArea;
 
-  if (entryTime) pieces.push(`Entrada: ${formatTime(String(entryTime))}`);
-  if (exitTime) pieces.push(`Salida: ${formatTime(String(exitTime))}`);
-  if (status) pieces.push(`Estado: ${statusLabel(String(status))}`);
-  if (lateMinutes !== undefined) pieces.push(`Retraso: ${lateMinutes} min`);
-  if (outsideArea) pieces.push('Fuera de area');
+    if (entryTime) pieces.push(`Entrada: ${formatTime(String(entryTime))}`);
+    if (exitTime) pieces.push(`Salida: ${formatTime(String(exitTime))}`);
+    if (status) pieces.push(`Estado: ${statusLabel(String(status))}`);
+    if (lateMinutes !== undefined && lateMinutes !== null) pieces.push(`Retraso: ${lateMinutes} min`);
+    if (outsideArea) pieces.push('Ubicación: Fuera de área');
+  }
+  
+  // 2. Handle Employees (CREATE_EMPLOYEE, UPDATE_EMPLOYEE, DEACTIVATE_EMPLOYEE)
+  else if (log.entity === 'Employee' || log.action.includes('EMPLOYEE')) {
+    if (log.action === 'CREATE_EMPLOYEE') {
+      pieces.push(`Creado funcionario: ${next.fullName} (CI ${next.ci}) - Cargo: ${next.position}`);
+    } else if (log.action === 'DEACTIVATE_EMPLOYEE') {
+      pieces.push(`Desactivado funcionario: ${previous.fullName} (CI ${previous.ci})`);
+    } else if (log.action === 'UPDATE_EMPLOYEE') {
+      const changes: string[] = [];
+      if (next.fullName !== previous.fullName) changes.push(`Nombre: "${previous.fullName}" ➔ "${next.fullName}"`);
+      if (next.ci !== previous.ci) changes.push(`CI: "${previous.ci}" ➔ "${next.ci}"`);
+      if (next.position !== previous.position) changes.push(`Cargo: "${previous.position}" ➔ "${next.position}"`);
+      if (next.department !== previous.department) changes.push(`Unidad: "${previous.department}" ➔ "${next.department}"`);
+      if (next.departamentoBolivia !== previous.departamentoBolivia) {
+        changes.push(`Depto Bolivia: "${previous.departamentoBolivia ?? 'Ninguno'}" ➔ "${next.departamentoBolivia ?? 'Ninguno'}"`);
+      }
+      if (next.phone !== previous.phone) changes.push(`Tel: "${previous.phone ?? ''}" ➔ "${next.phone ?? ''}"`);
+      if (changes.length > 0) {
+        pieces.push(`Modificado: ${changes.join(', ')}`);
+      } else {
+        pieces.push(`Datos de funcionario actualizados`);
+      }
+    }
+  }
+
+  // 3. Handle Holidays (CREATE_HOLIDAY, UPDATE_HOLIDAY, DELETE_HOLIDAY)
+  else if (log.entity === 'Holiday' || log.action.includes('HOLIDAY')) {
+    if (log.action === 'CREATE_HOLIDAY') {
+      pieces.push(`Creado feriado: "${next.name}" para la fecha ${next.date}`);
+      if (next.departments && Array.isArray(next.departments) && next.departments.length > 0) {
+        pieces.push(`Departamentos: ${next.departments.join(', ')}`);
+      }
+    } else if (log.action === 'DELETE_HOLIDAY') {
+      pieces.push(`Eliminado feriado: "${previous.name}" (${previous.date})`);
+    } else if (log.action === 'UPDATE_HOLIDAY') {
+      pieces.push(`Actualizado feriado: "${next.name}" (${next.date})`);
+    }
+  }
+
+  // 4. Handle Institutional Config (UPDATE_CONFIGURATION)
+  else if (log.entity === 'Configuration' || log.action.includes('CONFIGURATION')) {
+    pieces.push(`Nueva configuración - Ingreso: ${next.entryTime}, Salida: ${next.exitTime}, Tolerancia: ${next.toleranceMinutes} min`);
+  }
+
+  // 5. Handle Login (LOGIN)
+  else if (log.action === 'LOGIN') {
+    pieces.push(`Sesión iniciada con éxito`);
+  }
 
   if (pieces.length === 0 && log.reason) pieces.push(log.reason);
   if (pieces.length === 0) pieces.push('Cambio registrado');
@@ -1977,6 +2248,7 @@ function AttendanceHistory({
   onChanged,
   session,
   title,
+  employee,
 }: {
   attendances: Attendance[];
   canManage?: boolean;
@@ -1986,6 +2258,7 @@ function AttendanceHistory({
   onChanged?: (message: string) => void;
   session?: SessionUser;
   title: string;
+  employee?: Employee | SessionUser | null;
 }) {
   const now = new Date();
   const [visibleMonth, setVisibleMonth] = useState(new Date(now.getFullYear(), now.getMonth(), 1));
@@ -1998,12 +2271,24 @@ function AttendanceHistory({
       return acc;
     }, {});
   }, [attendances]);
+
+  const filteredHolidays = useMemo(() => {
+    const dept = employee?.departamentoBolivia;
+    if (!dept) return holidays;
+    return holidays.filter((h) => {
+      if (!h.departments || h.departments.length === 0 || h.departments.includes('TODOS')) {
+        return true;
+      }
+      return h.departments.includes(dept);
+    });
+  }, [holidays, employee]);
+
   const holidaysByDate = useMemo(() => {
-    return holidays.reduce<Record<string, Holiday>>((acc, holiday) => {
+    return filteredHolidays.reduce<Record<string, Holiday>>((acc, holiday) => {
       acc[holiday.date] = holiday;
       return acc;
     }, {});
-  }, [holidays]);
+  }, [filteredHolidays]);
 
   function moveMonth(offset: number) {
     setVisibleMonth(new Date(visibleMonth.getFullYear(), visibleMonth.getMonth() + offset, 1));
@@ -2067,6 +2352,10 @@ function AttendanceHistory({
                       const label = employee ? employee.fullName.split(' ')[0] : 'Funcionario';
                       const hasObservation = Boolean(attendance.entryObservation || attendance.exitObservation || attendance.notes);
                       const isJustified = attendance.status === 'JUSTIFIED';
+                      const recordDateStr = attendance.attendanceDate.slice(0, 10);
+                      const todayObj = new Date();
+                      const todayStr = `${todayObj.getFullYear()}-${String(todayObj.getMonth() + 1).padStart(2, '0')}-${String(todayObj.getDate()).padStart(2, '0')}`;
+                      const isPastDay = recordDateStr < todayStr;
                       const stateOnlyEvents: Record<string, { text: string; className: string }> = {
                         ABSENT: { text: 'Omision', className: 'event-missing' },
                         HOLIDAY: { text: 'Feriado', className: 'event-holiday' },
@@ -2097,7 +2386,7 @@ function AttendanceHistory({
                             }
                           : {
                               key: `${attendance.id}-missing`,
-                              text: 'Salida pendiente',
+                              text: isPastDay ? 'Omision' : 'Salida pendiente',
                               className: 'event-missing',
                             },
                       ].filter(Boolean) as Array<{ key: string; text: string; className: string }>;
@@ -2128,6 +2417,7 @@ function AttendanceHistory({
           canManage={canManage}
           session={session}
           onChanged={onChanged}
+          targetEmployee={employee}
         />
       )}
     </section>
@@ -2144,6 +2434,7 @@ function AttendanceDayModal({
   onClose,
   records,
   session,
+  targetEmployee,
 }: {
   canManage?: boolean;
   configuration?: Configuration | null;
@@ -2154,8 +2445,13 @@ function AttendanceDayModal({
   onClose: () => void;
   records: Attendance[];
   session?: SessionUser;
+  targetEmployee?: Employee | SessionUser | null;
 }) {
   const [expandedPhoto, setExpandedPhoto] = useState<{ label: string; src: string } | null>(null);
+  
+  const filteredRecords = targetEmployee
+    ? records.filter((r) => r.employeeId === targetEmployee.id)
+    : records;
 
   return (
     <div className="detail-backdrop">
@@ -2176,7 +2472,7 @@ function AttendanceDayModal({
         )}
 
         <div className="detail-records">
-          {records.map((attendance) => {
+          {filteredRecords.map((attendance) => {
             const employee = employees.find((item) => item.id === attendance.employeeId);
 
             return (
@@ -2222,9 +2518,10 @@ function AttendanceDayModal({
             configuration={configuration}
             dateKey={dateKey}
             employees={employees}
-            records={records}
+            records={filteredRecords}
             onChanged={onChanged}
             session={session}
+            targetEmployee={targetEmployee}
           />
         )}
       </section>
@@ -2359,6 +2656,7 @@ function AdminAttendanceEditor({
   onChanged,
   records,
   session,
+  targetEmployee,
 }: {
   configuration?: Configuration | null;
   dateKey: string;
@@ -2366,9 +2664,12 @@ function AdminAttendanceEditor({
   onChanged: (message: string) => void;
   records: Attendance[];
   session?: SessionUser;
+  targetEmployee?: Employee | SessionUser | null;
 }) {
   const activeEmployees = employees.filter((employee) => employee.status === 'ACTIVE');
-  const [employeeId, setEmployeeId] = useState(records[0]?.employeeId ?? activeEmployees[0]?.id ?? employees[0]?.id ?? '');
+  const [employeeId, setEmployeeId] = useState(
+    targetEmployee?.id ?? records[0]?.employeeId ?? activeEmployees[0]?.id ?? employees[0]?.id ?? ''
+  );
   const selectedRecord = records.find((record) => record.employeeId === employeeId);
   const [form, setForm] = useState({
     entryTime: '',
@@ -2422,13 +2723,20 @@ function AdminAttendanceEditor({
         Para marcados normales usa Automatico. El sistema decide Presente o Retraso segun la hora de ingreso configurada.
         Usa los otros modos solo para casos administrativos especiales.
       </p>
-      <select value={employeeId} onChange={(event) => setEmployeeId(event.target.value)}>
-        {activeEmployees.map((employee) => (
-          <option key={employee.id} value={employee.id}>
-            {employee.fullName}
-          </option>
-        ))}
-      </select>
+      {targetEmployee ? (
+        <div style={{ padding: '10px 14px', background: '#f8fafc', borderRadius: '10px', fontWeight: '800', fontSize: '13.5px', color: '#334155', border: '1px solid #e2e8f0', marginBottom: '14px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span>Funcionario:</span>
+          <strong style={{ color: '#0f766e' }}>{targetEmployee.fullName}</strong>
+        </div>
+      ) : (
+        <select value={employeeId} onChange={(event) => setEmployeeId(event.target.value)}>
+          {activeEmployees.map((employee) => (
+            <option key={employee.id} value={employee.id}>
+              {employee.fullName}
+            </option>
+          ))}
+        </select>
+      )}
       <input type="time" value={form.entryTime} onChange={(event) => setForm({ ...form, entryTime: event.target.value })} />
       <input type="time" value={form.exitTime} onChange={(event) => setForm({ ...form, exitTime: event.target.value })} />
       <select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value })}>

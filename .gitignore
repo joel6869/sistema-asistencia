@@ -6,3 +6,4 @@ coverage/
 dev-server*.log
 backend/dev-store.json
 backend/uploads/
+*.zip

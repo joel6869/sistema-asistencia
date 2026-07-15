@@ -6,6 +6,7 @@ import {
   GeoPoint,
   getDateKey,
   getDayStart,
+  getUtcDateKey,
   normalizeLocationPoints,
   saveAttendancePhoto,
   serializeAttendance,
@@ -65,7 +66,7 @@ export async function getAttendanceSummary(_req: Request, res: Response) {
 
   res.status(200).json({
     data: {
-      date: getDateKey(today),
+      date: getUtcDateKey(today),
       activeEmployees,
       registered: todayAttendances.length,
       present: todayAttendances.filter((attendance) => ['PRESENT', 'JUSTIFIED'].includes(attendance.status)).length,
@@ -245,7 +246,7 @@ export async function registerAttendance(req: AuthenticatedRequest & Request<unk
       entity: 'Attendance',
       entityId: attendance.id,
       newValue: {
-        attendanceDate: getDateKey(attendanceDate),
+        attendanceDate: getUtcDateKey(attendanceDate),
         employeeCi: employee.ci,
         employeeName: employee.fullName,
         entryTime: serverTime.toISOString(),
@@ -307,7 +308,7 @@ export async function registerAttendance(req: AuthenticatedRequest & Request<unk
     entity: 'Attendance',
     entityId: attendance.id,
     newValue: {
-      attendanceDate: getDateKey(attendance.attendanceDate),
+      attendanceDate: getUtcDateKey(attendance.attendanceDate),
       employeeCi: employee.ci,
       employeeName: employee.fullName,
       exitTime: serverTime.toISOString(),
@@ -372,9 +373,9 @@ export async function saveAdminAttendance(
     where: { isActive: true },
     orderBy: { validFrom: 'desc' },
   });
-  const date = getDayStart(new Date(`${attendanceDate}T00:00:00.000Z`));
-  const entryDateTime = entryTime ? new Date(`${attendanceDate}T${entryTime}:00`) : null;
-  const exitDateTime = exitTime ? new Date(`${attendanceDate}T${exitTime}:00`) : null;
+  const date = new Date(`${attendanceDate}T00:00:00.000Z`);
+  const entryDateTime = entryTime ? new Date(`${attendanceDate}T${entryTime}:00-04:00`) : null;
+  const exitDateTime = exitTime ? new Date(`${attendanceDate}T${exitTime}:00-04:00`) : null;
   const calculatedLateMinutes =
     entryDateTime && configuration
       ? Math.max(0, calculateLateMinutes(entryDateTime, configuration.entryTime) - configuration.toleranceMinutes)
@@ -503,7 +504,7 @@ export async function deleteAttendanceMark(
       entity: 'Attendance',
       entityId: attendance.id,
       oldValue: {
-        attendanceDate: getDateKey(attendance.attendanceDate),
+        attendanceDate: getUtcDateKey(attendance.attendanceDate),
         entryTime: attendance.entryTime?.toISOString() ?? null,
         exitTime: attendance.exitTime?.toISOString() ?? null,
         status: attendance.status,
@@ -543,7 +544,7 @@ export async function deleteAttendanceMark(
     entity: 'Attendance',
     entityId: attendance.id,
     oldValue: {
-      attendanceDate: getDateKey(attendance.attendanceDate),
+      attendanceDate: getUtcDateKey(attendance.attendanceDate),
       entryTime: attendance.entryTime?.toISOString() ?? null,
       exitTime: attendance.exitTime?.toISOString() ?? null,
       status: attendance.status,
@@ -587,7 +588,7 @@ function getEntryLocationNote(
 
   return `Entrada fuera del radio permitido. Punto mas cercano: ${closest.point.name}, distancia aproximada ${Math.round(
     closest.distanceMeters,
-  )} m, radio permitido ${radiusMeters} m`;
+  )} m`;
 }
 
 function isOutsideAreaAttendance(notes: string | null) {
