@@ -44,6 +44,7 @@ interface SessionUser {
   role: Role;
   status: 'ACTIVE' | 'INACTIVE';
   token: string;
+  profilePhotoUrl?: string | null;
 }
 
 interface Employee extends Omit<SessionUser, 'token'> {
@@ -243,7 +244,9 @@ function compressVideoFrame(video: HTMLVideoElement) {
   return canvas.toDataURL('image/jpeg', 0.68);
 }
 
-function getBrowserLocation(): Promise<GeoPoint | undefined> {
+function getBrowserLocation(
+  onProgress?: (accuracy: number) => void,
+): Promise<GeoPoint | undefined> {
   if (!navigator.geolocation) return Promise.resolve(undefined);
 
   return new Promise((resolve) => {
@@ -269,9 +272,11 @@ function getBrowserLocation(): Promise<GeoPoint | undefined> {
 
         if (!bestPosition || nextPosition.accuracy < (bestPosition.accuracy ?? Number.POSITIVE_INFINITY)) {
           bestPosition = nextPosition;
+          onProgress?.(Math.round(nextPosition.accuracy));
         }
 
-        if (nextPosition.accuracy <= 20) {
+        // Accept <=30m for better compatibility indoors
+        if (nextPosition.accuracy <= 30) {
           finish(watchId);
         }
       },
@@ -279,11 +284,12 @@ function getBrowserLocation(): Promise<GeoPoint | undefined> {
       {
         enableHighAccuracy: true,
         maximumAge: 0,
-        timeout: 12000,
+        timeout: 20000,
       },
     );
 
-    window.setTimeout(() => finish(watchId), 10000);
+    // Extended timeout: 18 seconds to collect the best signal available
+    window.setTimeout(() => finish(watchId), 18000);
   });
 }
 
@@ -301,6 +307,7 @@ export default function App() {
   const [summary, setSummary] = useState<AttendanceSummary | null>(null);
   const [toast, setToast] = useState<{ text: string; tone: 'success' | 'error' | 'info' } | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [inactivityWarning, setInactivityWarning] = useState(false);
 
   function showToast(text: string, tone: 'success' | 'error' | 'info' = 'info') {
     setToast({ text, tone });
@@ -338,14 +345,28 @@ export default function App() {
     const holidaysData = (await holidaysResponse.json()) as ApiList<Holiday>;
     const auditData = auditResponse ? ((await auditResponse.json()) as ApiList<AuditLog>) : { data: [], total: 0 };
 
-    setEmployees(Array.isArray(employeesPayload.data) ? employeesPayload.data : [employeesPayload.data]);
+    const employeeList: Employee[] = Array.isArray(employeesPayload.data)
+      ? employeesPayload.data
+      : [employeesPayload.data];
+
+    setEmployees(employeeList);
     setAttendances(attendancesData.data);
     setConfiguration(configurationData.data);
     setSummary(summaryData.data);
     setHolidays(holidaysData.data);
     setAuditLogs(auditData.data);
+
+    // Enrich session with profile photo from employee data
+    setSession((prev) => {
+      if (!prev) return prev;
+      const match = employeeList.find((e) => e.id === prev.id);
+      if (!match) return prev;
+      if (prev.profilePhotoUrl === match.profilePhotoUrl) return prev;
+      return { ...prev, profilePhotoUrl: match.profilePhotoUrl ?? null };
+    });
   }
 
+  // Initial data load and fallback polling every 60 seconds
   useEffect(() => {
     loadData().catch(() => showToast('No se pudo conectar con el backend.', 'error'));
 
@@ -353,21 +374,85 @@ export default function App() {
 
     const interval = setInterval(() => {
       loadData().catch(() => {});
-    }, 8000);
+    }, 60000);
 
     return () => clearInterval(interval);
   }, [session]);
 
+  // Real-time attendance updates via Server-Sent Events
   useEffect(() => {
     if (!session) return;
 
-    let timeoutId: number;
+    let eventSource: EventSource | null = null;
+    let reconnectTimeout: number;
+    let closed = false;
+
+    function connectSse() {
+      if (closed) return;
+      const url = `${API_URL}/attendances/live`;
+      // EventSource doesn't support custom headers so we pass token as query param
+      const sseUrl = `${url}?token=${encodeURIComponent(session!.token)}`;
+      eventSource = new EventSource(sseUrl);
+
+      eventSource.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data) as { type: string; payload?: Attendance & { deleted?: boolean } };
+          if (msg.type === 'attendance_update' && msg.payload) {
+            const updated = msg.payload;
+            setAttendances((prev) => {
+              if (updated.deleted) {
+                return prev.filter((a) => a.id !== updated.id);
+              }
+              const idx = prev.findIndex((a) => a.id === updated.id);
+              if (idx >= 0) {
+                const next = [...prev];
+                next[idx] = updated;
+                return next;
+              }
+              return [updated, ...prev];
+            });
+          }
+        } catch {
+          // ignore parse errors
+        }
+      };
+
+      eventSource.onerror = () => {
+        eventSource?.close();
+        eventSource = null;
+        if (!closed) {
+          reconnectTimeout = window.setTimeout(connectSse, 5000);
+        }
+      };
+    }
+
+    connectSse();
+
+    return () => {
+      closed = true;
+      window.clearTimeout(reconnectTimeout);
+      eventSource?.close();
+    };
+  }, [session]);
+
+
+  useEffect(() => {
+    if (!session) return;
+
+    let warnTimeout: number;
+    let logoutTimeout: number;
 
     function resetInactivityTimer() {
-      window.clearTimeout(timeoutId);
-      timeoutId = window.setTimeout(() => {
+      window.clearTimeout(warnTimeout);
+      window.clearTimeout(logoutTimeout);
+      setInactivityWarning(false);
+      // Warn at 9 minutes, logout at 10 minutes
+      warnTimeout = window.setTimeout(() => {
+        setInactivityWarning(true);
+      }, 9 * 60 * 1000);
+      logoutTimeout = window.setTimeout(() => {
         logout();
-        showToast('Sesión cerrada automáticamente por inactividad de 10 minutos.', 'info');
+        showToast('Sesión cerrada automáticamente por 10 minutos de inactividad.', 'info');
       }, 10 * 60 * 1000);
     }
 
@@ -379,12 +464,14 @@ export default function App() {
     resetInactivityTimer();
 
     return () => {
-      window.clearTimeout(timeoutId);
+      window.clearTimeout(warnTimeout);
+      window.clearTimeout(logoutTimeout);
       events.forEach((event) => {
         window.removeEventListener(event, resetInactivityTimer);
       });
     };
   }, [session]);
+
 
   function handleLoggedIn(user: SessionUser) {
     localStorage.setItem(SESSION_KEY, JSON.stringify(user));
@@ -428,8 +515,42 @@ export default function App() {
         </div>
 
         <div className="user-card">
-          <strong>{session.fullName}</strong>
-          <span>{session.role === 'ADMIN' ? 'Administrador' : session.position}</span>
+          {session.profilePhotoUrl ? (
+            <img
+              src={assetUrl(session.profilePhotoUrl)}
+              alt=""
+              style={{
+                width: '52px',
+                height: '52px',
+                borderRadius: '50%',
+                objectFit: 'cover',
+                border: '2px solid rgba(255,255,255,0.35)',
+                flexShrink: 0,
+              }}
+            />
+          ) : (
+            <div
+              style={{
+                width: '52px',
+                height: '52px',
+                borderRadius: '50%',
+                background: 'rgba(255,255,255,0.18)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: '22px',
+                fontWeight: '800',
+                color: '#ffffff',
+                flexShrink: 0,
+              }}
+            >
+              {session.fullName.slice(0, 1)}
+            </div>
+          )}
+          <div>
+            <strong>{session.fullName}</strong>
+            <span>{session.role === 'ADMIN' ? 'Administrador' : session.position}</span>
+          </div>
         </div>
 
         <nav className="nav-list">
@@ -473,6 +594,26 @@ export default function App() {
         </header>
 
         {toast && <Toast text={toast.text} tone={toast.tone} onClose={() => setToast(null)} />}
+
+        {inactivityWarning && (
+          <div className="inactivity-modal-overlay">
+            <div className="inactivity-modal">
+              <div className="inactivity-icon">⏱️</div>
+              <h3>¿Sigues ahí?</h3>
+              <p>Tu sesión se cerrará automáticamente en <strong>1 minuto</strong> por inactividad.</p>
+              <button
+                className="btn-primary"
+                onClick={() => {
+                  setInactivityWarning(false);
+                  // Dispatch a synthetic event to reset timer
+                  window.dispatchEvent(new MouseEvent('mousemove'));
+                }}
+              >
+                Continuar sesión
+              </button>
+            </div>
+          </div>
+        )}
 
         {session.role === 'EMPLOYEE' && view === 'today' && (
           <EmployeeToday
@@ -645,6 +786,7 @@ function EmployeeToday({
   const [working, setWorking] = useState(false);
   const [entryObservation, setEntryObservation] = useState('');
   const [exitObservation, setExitObservation] = useState('');
+  const [gpsProgress, setGpsProgress] = useState<number | null>(null);
   const monthlyLateMinutes = getMonthlyLateMinutes(attendances);
 
   function requestRegistration(type: AttendanceType) {
@@ -664,9 +806,14 @@ function EmployeeToday({
   async function register(type: AttendanceType, photoDataUrl: string) {
     setPendingType(null);
     setWorking(true);
-    onRegistered('Foto capturada. Obteniendo ubicacion y registrando asistencia...');
+    setGpsProgress(null);
+    onRegistered('Foto capturada. Obteniendo GPS...');
     try {
-      let location = await getBrowserLocation();
+      let location = await getBrowserLocation((accuracy) => {
+        setGpsProgress(accuracy);
+        onRegistered(`Obteniendo GPS... precisión actual: ${accuracy} m`);
+      });
+      setGpsProgress(null);
       while (!location) {
         const retry = window.confirm(
           "El sistema requiere acceso a su ubicación (GPS) para registrar la asistencia.\n\nPor favor:\n1. Habilite el GPS/ubicación de su dispositivo.\n2. Conceda permiso de ubicación al navegador.\n3. Presione 'Aceptar' para reintentar."
@@ -677,8 +824,13 @@ function EmployeeToday({
           return;
         }
         onRegistered('Reintentando obtener ubicación...');
-        location = await getBrowserLocation();
+        location = await getBrowserLocation((accuracy) => {
+          setGpsProgress(accuracy);
+          onRegistered(`Obteniendo GPS... precisión actual: ${accuracy} m`);
+        });
+        setGpsProgress(null);
       }
+      onRegistered('GPS obtenido. Registrando asistencia...');
       const response = await fetch(`${API_URL}/attendances/register`, {
         method: 'POST',
         headers: authHeaders(user, { 'Content-Type': 'application/json' }),
@@ -712,15 +864,60 @@ function EmployeeToday({
       onRegistered('No se pudo conectar con el backend.', 'error');
     } finally {
       setWorking(false);
+      setGpsProgress(null);
     }
   }
 
   return (
     <div className="employee-layout">
       <section className="hero-card">
-        <p className="brand-kicker">Registro del dia</p>
-        <h2>Hola, {user.fullName.split(' ')[0]}</h2>
-        <p>Marca tu entrada o salida en pocos pasos. El sistema usa la hora del servidor.</p>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '14px', marginBottom: '4px' }}>
+          {user.profilePhotoUrl ? (
+            <img
+              src={assetUrl(user.profilePhotoUrl)}
+              alt=""
+              style={{
+                width: '64px',
+                height: '64px',
+                borderRadius: '50%',
+                objectFit: 'cover',
+                border: '3px solid rgba(255,255,255,0.4)',
+                boxShadow: '0 4px 12px rgba(0,0,0,0.25)',
+                flexShrink: 0,
+              }}
+            />
+          ) : (
+            <div
+              style={{
+                width: '64px',
+                height: '64px',
+                borderRadius: '50%',
+                background: 'rgba(255,255,255,0.2)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: '26px',
+                fontWeight: '900',
+                color: '#ffffff',
+                border: '3px solid rgba(255,255,255,0.3)',
+                flexShrink: 0,
+              }}
+            >
+              {user.fullName.slice(0, 1)}
+            </div>
+          )}
+          <div>
+            <p className="brand-kicker" style={{ margin: 0 }}>Registro del dia</p>
+            <h2 style={{ margin: 0 }}>Hola, {user.fullName.split(' ')[0]}</h2>
+          </div>
+        </div>
+        {gpsProgress !== null && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 14px', background: 'rgba(255,255,255,0.12)', borderRadius: '10px', fontSize: '13px', fontWeight: '700', color: '#ffffff', marginTop: '8px' }}>
+            <span style={{ animation: 'pulse 1.2s infinite' }}>📡</span>
+            <span>Obteniendo GPS — precisión actual: {gpsProgress} m</span>
+          </div>
+        )}
+        <p style={{ marginTop: '8px' }}>Marca tu entrada o salida en pocos pasos. El sistema usa la hora del servidor.</p>
 
         <div className="today-status">
           <div>
@@ -735,7 +932,25 @@ function EmployeeToday({
             <span>Retraso</span>
             <strong>{attendance?.lateMinutes ?? 0} min</strong>
           </div>
+          <div>
+            <span>Ubicación</span>
+            <strong style={{ fontSize: '18px', display: 'flex', alignItems: 'center', gap: '6px', color: attendance?.notes?.includes('Fuera del radio') ? '#fca5a5' : '#86efac' }}>
+              {attendance?.entryTime
+                ? attendance?.notes?.includes('Fuera del radio')
+                  ? '⚠️ Fuera de rango'
+                  : attendance?.entryLocation
+                  ? '✅ En rango'
+                  : '📍 Sin GPS'
+                : '⏳ Pendiente'}
+            </strong>
+          </div>
         </div>
+        {attendance?.notes && (
+          <div style={{ marginTop: '12px', padding: '12px 16px', background: attendance.notes.includes('Fuera del radio') ? 'rgba(239, 68, 68, 0.25)' : 'rgba(16, 185, 129, 0.25)', border: `1px solid ${attendance.notes.includes('Fuera del radio') ? '#f87171' : '#34d399'}`, borderRadius: '12px', fontSize: '13.5px', lineHeight: '1.4', fontWeight: '700', color: '#ffffff', display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <span>{attendance.notes.includes('Fuera del radio') ? '📍 Aviso de GPS:' : '📍 GPS Validado:'}</span>
+            <span>{attendance.notes}</span>
+          </div>
+        )}
         <div className="monthly-late-card">
           <span>Retraso acumulado del mes</span>
           <strong>{monthlyLateMinutes} min</strong>
@@ -935,7 +1150,15 @@ function AdminOverview({
 }) {
   const activeEmployees = employees.filter((employee) => employee.status === 'ACTIVE');
   const [selectedEmployeeId, setSelectedEmployeeId] = useState(activeEmployees[0]?.id ?? '');
-  const [showPastAlerts, setShowPastAlerts] = useState(false);
+  const [activeTab, setActiveTab] = useState<'today' | 'past'>('today');
+  const [todayIndex, setTodayIndex] = useState(0);
+  const [pastIndex, setPastIndex] = useState(0);
+
+  useEffect(() => {
+    setTodayIndex(0);
+    setPastIndex(0);
+  }, [selectedEmployeeId]);
+
   const selectedEmployee = employees.find((employee) => employee.id === selectedEmployeeId);
   const filteredAttendances = selectedEmployeeId
     ? attendances.filter((attendance) => attendance.employeeId === selectedEmployeeId)
@@ -995,87 +1218,156 @@ function AdminOverview({
         </div>
       </section>
       <section className="outside-area-panel">
-        <div className="panel-header-gps">
-          <h3>Monitoreo de GPS</h3>
-          <p>Marcaciones de hoy y validación de rango.</p>
+        <div className="gps-panel-header">
+          <div className="gps-title-container">
+            <h3>Monitoreo de GPS</h3>
+            <p>Validación de rango en tiempo real</p>
+          </div>
+          <div className="gps-tabs">
+            <button
+              type="button"
+              className={`gps-tab-btn ${activeTab === 'today' ? 'active' : ''}`}
+              onClick={() => setActiveTab('today')}
+            >
+              Hoy ({todayRecords.length})
+            </button>
+            <button
+              type="button"
+              className={`gps-tab-btn ${activeTab === 'past' ? 'active' : ''}`}
+              onClick={() => setActiveTab('past')}
+            >
+              Alertas pasadas ({pastAlerts.length})
+            </button>
+          </div>
         </div>
-        
-        <div className="today-gps-list">
-          {todayRecords.length === 0 ? (
-            <span className="empty-alert">Sin marcaciones registradas hoy.</span>
-          ) : (
-            todayRecords.map((attendance) => {
-              const employee = employees.find((item) => item.id === attendance.employeeId);
-              const hasGps = attendance.entryLocation?.latitude && attendance.entryLocation?.longitude;
-              const isOutside = hasOutsideAreaNote(attendance);
-              
-              let statusLabel = '';
-              let statusClass = '';
-              let detailText = '';
-              
-              if (!hasGps) {
-                statusLabel = 'Sin GPS / Permiso denegado';
-                statusClass = 'status-no-gps';
-                detailText = 'No se capturaron coordenadas de ubicación para esta marca.';
-              } else if (isOutside) {
-                statusLabel = 'Fuera de rango';
-                statusClass = 'status-outside';
-                detailText = (attendance.notes ?? '').replace(/,\s*radio permitido\s*\d+\s*m/gi, '');
-              } else {
-                statusLabel = 'Dentro de rango';
-                statusClass = 'status-inside';
-                detailText = 'Ubicación validada correctamente.';
-              }
 
-              return (
-                <article key={attendance.id} className="gps-record">
-                  <div className="gps-record-header">
-                    <strong>{employee?.fullName ?? 'Funcionario'}</strong>
-                    <span className="gps-record-time">{formatTime(attendance.entryTime)}</span>
-                    <span className={`gps-badge ${statusClass}`}>{statusLabel}</span>
-                  </div>
-                  <small className="gps-record-detail">{detailText}</small>
-                </article>
-              );
-            })
+        <div className="gps-carousel-container">
+          {activeTab === 'today' ? (
+            todayRecords.length === 0 ? (
+              <div className="gps-empty-state">
+                <span>Sin marcaciones registradas hoy.</span>
+              </div>
+            ) : (
+              <div className="gps-carousel-wrapper">
+                {todayRecords.length > 1 && (
+                  <button
+                    type="button"
+                    className="carousel-nav-btn prev"
+                    onClick={() => setTodayIndex((prev) => (prev - 1 + todayRecords.length) % todayRecords.length)}
+                  >
+                    ◀
+                  </button>
+                )}
+                
+                <div className="gps-carousel-content">
+                  {todayRecords.map((attendance, idx) => {
+                    if (idx !== todayIndex) return null;
+                    const employee = employees.find((item) => item.id === attendance.employeeId);
+                    const hasGps = attendance.entryLocation?.latitude && attendance.entryLocation?.longitude;
+                    const isOutside = hasOutsideAreaNote(attendance);
+                    
+                    let statusLabel = '';
+                    let statusClass = '';
+                    let detailText = '';
+                    
+                    if (!hasGps) {
+                      statusLabel = 'Sin GPS / Permiso denegado';
+                      statusClass = 'status-no-gps';
+                      detailText = 'No se capturaron coordenadas de ubicación para esta marca.';
+                    } else if (isOutside) {
+                      statusLabel = 'Fuera de rango';
+                      statusClass = 'status-outside';
+                      detailText = (attendance.notes ?? '').replace(/,\s*radio permitido\s*\d+\s*m/gi, '');
+                    } else {
+                      statusLabel = 'Dentro de rango';
+                      statusClass = 'status-inside';
+                      detailText = attendance.notes || 'Ubicación validada correctamente.';
+                    }
+
+                    return (
+                      <article key={attendance.id} className="gps-record animate-fade">
+                        <div className="gps-record-header">
+                          <strong className="gps-employee-name">{employee?.fullName ?? 'Funcionario'}</strong>
+                          <span className="gps-record-time">{formatTime(attendance.entryTime)}</span>
+                          <span className={`gps-badge ${statusClass}`}>{statusLabel}</span>
+                        </div>
+                        <small className="gps-record-detail">{detailText}</small>
+                        {todayRecords.length > 1 && (
+                          <div className="carousel-indicator">
+                            {idx + 1} / {todayRecords.length}
+                          </div>
+                        )}
+                      </article>
+                    );
+                  })}
+                </div>
+
+                {todayRecords.length > 1 && (
+                  <button
+                    type="button"
+                    className="carousel-nav-btn next"
+                    onClick={() => setTodayIndex((prev) => (prev + 1) % todayRecords.length)}
+                  >
+                    ▶
+                  </button>
+                )}
+              </div>
+            )
+          ) : (
+            pastAlerts.length === 0 ? (
+              <div className="gps-empty-state">
+                <span>Sin alertas en días anteriores.</span>
+              </div>
+            ) : (
+              <div className="gps-carousel-wrapper">
+                {pastAlerts.length > 1 && (
+                  <button
+                    type="button"
+                    className="carousel-nav-btn prev"
+                    onClick={() => setPastIndex((prev) => (prev - 1 + pastAlerts.length) % pastAlerts.length)}
+                  >
+                    ◀
+                  </button>
+                )}
+                
+                <div className="gps-carousel-content">
+                  {pastAlerts.map((attendance, idx) => {
+                    if (idx !== pastIndex) return null;
+                    const employee = employees.find((item) => item.id === attendance.employeeId);
+                    const cleanNotes = (attendance.notes ?? '').replace(/,\s*radio permitido\s*\d+\s*m/gi, '');
+                    return (
+                      <article key={attendance.id} className="gps-record past-record animate-fade">
+                        <div className="gps-record-header">
+                          <strong className="gps-employee-name">{employee?.fullName ?? 'Funcionario'}</strong>
+                          <span className="gps-record-time">
+                            {attendance.attendanceDate} - {formatTime(attendance.entryTime)}
+                          </span>
+                          <span className="gps-badge status-outside">Fuera de rango</span>
+                        </div>
+                        <small className="gps-record-detail">{cleanNotes}</small>
+                        {pastAlerts.length > 1 && (
+                          <div className="carousel-indicator">
+                            {idx + 1} / {pastAlerts.length}
+                          </div>
+                        )}
+                      </article>
+                    );
+                  })}
+                </div>
+
+                {pastAlerts.length > 1 && (
+                  <button
+                    type="button"
+                    className="carousel-nav-btn next"
+                    onClick={() => setPastIndex((prev) => (prev + 1) % pastAlerts.length)}
+                  >
+                    ▶
+                  </button>
+                )}
+              </div>
+            )
           )}
         </div>
-
-        <div className="past-gps-toggle-container">
-          <button 
-            type="button"
-            className="past-gps-toggle-btn"
-            onClick={() => setShowPastAlerts(!showPastAlerts)}
-          >
-            <span>{showPastAlerts ? '▼' : '▶'} Alertas de días anteriores</span>
-            <span className="past-alerts-count">({pastAlerts.length})</span>
-          </button>
-        </div>
-
-        {showPastAlerts && (
-          <div className="past-gps-list">
-            {pastAlerts.length === 0 ? (
-              <span className="empty-alert">Sin alertas en días anteriores.</span>
-            ) : (
-              pastAlerts.map((attendance) => {
-                const employee = employees.find((item) => item.id === attendance.employeeId);
-                const cleanNotes = (attendance.notes ?? '').replace(/,\s*radio permitido\s*\d+\s*m/gi, '');
-                return (
-                  <article key={attendance.id} className="gps-record past-record">
-                    <div className="gps-record-header">
-                      <strong>{employee?.fullName ?? 'Funcionario'}</strong>
-                      <span className="gps-record-time">
-                        {attendance.attendanceDate} - {formatTime(attendance.entryTime)}
-                      </span>
-                      <span className="gps-badge status-outside">Fuera de rango</span>
-                    </div>
-                    <small className="gps-record-detail">{cleanNotes}</small>
-                  </article>
-                );
-              })
-            )}
-          </div>
-        )}
       </section>
       <AttendanceHistory
         attendances={filteredAttendances}
@@ -2314,10 +2606,30 @@ function AttendanceHistory({
       </aside>
 
       <section className="calendar-main">
-        <header className="calendar-toolbar">
-          <button onClick={() => moveMonth(-1)}>‹</button>
-          <h3>{monthName}</h3>
-          <button onClick={() => moveMonth(1)}>›</button>
+        <header className="calendar-toolbar" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <button type="button" onClick={() => moveMonth(-1)}>‹</button>
+            <h3 style={{ margin: 0 }}>{monthName}</h3>
+            <button type="button" onClick={() => moveMonth(1)}>›</button>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <button
+              type="button"
+              onClick={() => setVisibleMonth(new Date(now.getFullYear(), now.getMonth(), 1))}
+              style={{ fontSize: '13px', padding: '6px 12px', borderRadius: '8px', border: '1px solid #cbd5e1', background: '#ffffff', fontWeight: '800', cursor: 'pointer', color: '#0f766e' }}
+            >
+              Ir a Hoy
+            </button>
+            <input
+              type="month"
+              value={`${visibleMonth.getFullYear()}-${String(visibleMonth.getMonth() + 1).padStart(2, '0')}`}
+              onChange={(event) => {
+                const [year, month] = event.target.value.split('-').map(Number);
+                if (year && month) setVisibleMonth(new Date(year, month - 1, 1));
+              }}
+              style={{ padding: '6px 10px', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px', fontWeight: '800', background: '#ffffff', color: '#1e293b' }}
+            />
+          </div>
         </header>
 
         <div className="calendar-weekdays">
@@ -2335,70 +2647,72 @@ function AttendanceHistory({
             const holiday = holidaysByDate[dateKey];
             const muted = date.getMonth() !== visibleMonth.getMonth();
 
+            const allEvents = holiday
+              ? [{ key: 'holiday', text: holiday.name, className: 'event-holiday' }]
+              : records.flatMap((attendance) => {
+                  const employee = employees.find((item) => item.id === attendance.employeeId);
+                  const label = employee ? employee.fullName.split(' ')[0] : 'Funcionario';
+                  const hasObservation = Boolean(attendance.entryObservation || attendance.exitObservation || attendance.notes);
+                  const isJustified = attendance.status === 'JUSTIFIED';
+                  const recordDateStr = attendance.attendanceDate.slice(0, 10);
+                  const todayObj = new Date();
+                  const todayStr = `${todayObj.getFullYear()}-${String(todayObj.getMonth() + 1).padStart(2, '0')}-${String(todayObj.getDate()).padStart(2, '0')}`;
+                  const isPastDay = recordDateStr < todayStr;
+                  const stateOnlyEvents: Record<string, { text: string; className: string }> = {
+                    ABSENT: { text: 'Omision', className: 'event-missing' },
+                    HOLIDAY: { text: 'Feriado', className: 'event-holiday' },
+                    PENDING: { text: 'Pendiente', className: 'event-missing' },
+                  };
+                  if (!attendance.entryTime && !attendance.exitTime && stateOnlyEvents[attendance.status]) {
+                    const event = stateOnlyEvents[attendance.status];
+                    return [
+                      {
+                        key: `${attendance.id}-state`,
+                        text: `${event.text}${employees.length > 1 ? ` - ${label}` : ''}${hasObservation ? ' • obs' : ''}`,
+                        className: event.className,
+                      },
+                    ];
+                  }
+                  const entryState = getCalendarEntryState(attendance, configuration);
+                  const events = [
+                    attendance.entryTime && {
+                      key: `${attendance.id}-entry`,
+                      text: `${formatTime(attendance.entryTime)} ${entryState.label}${employees.length > 1 ? ` - ${label}` : ''}${hasObservation ? ' • obs' : ''}`,
+                      className: entryState.className,
+                    },
+                    attendance.exitTime
+                      ? {
+                          key: `${attendance.id}-exit`,
+                          text: `${formatTime(attendance.exitTime)} ${isJustified ? 'Justificado' : 'Normal'}${employees.length > 1 ? ` - ${label}` : ''}${hasObservation ? ' • obs' : ''}`,
+                          className: isJustified ? 'event-proof' : 'event-ok',
+                        }
+                      : {
+                          key: `${attendance.id}-missing`,
+                          text: `${isPastDay ? 'Omision' : 'Salida pendiente'}${employees.length > 1 ? ` - ${label}` : ''}`,
+                          className: 'event-missing',
+                        },
+                  ].filter(Boolean) as Array<{ key: string; text: string; className: string }>;
+                  return events;
+                });
+
             return (
               <article
                 className={`calendar-cell ${muted ? 'muted' : ''} ${records.length || holiday || canManage ? 'has-records' : ''}`}
                 key={dateKey}
+                style={{ minHeight: '110px', maxHeight: '115px', overflow: 'hidden', display: 'flex', flexDirection: 'column', justifyContent: 'flex-start' }}
                 onClick={() => (records.length > 0 || holiday || canManage) && setSelectedDateKey(dateKey)}
               >
                 <strong className="day-number">{date.getDate()}</strong>
-                <div className="day-events">
-                  {holiday && <span className="calendar-event event-holiday">{holiday.name}</span>}
-                  {records.length === 0 && !holiday ? (
-                    <span className="empty-day" />
-                  ) : (
-                    records.flatMap((attendance) => {
-                      const employee = employees.find((item) => item.id === attendance.employeeId);
-                      const label = employee ? employee.fullName.split(' ')[0] : 'Funcionario';
-                      const hasObservation = Boolean(attendance.entryObservation || attendance.exitObservation || attendance.notes);
-                      const isJustified = attendance.status === 'JUSTIFIED';
-                      const recordDateStr = attendance.attendanceDate.slice(0, 10);
-                      const todayObj = new Date();
-                      const todayStr = `${todayObj.getFullYear()}-${String(todayObj.getMonth() + 1).padStart(2, '0')}-${String(todayObj.getDate()).padStart(2, '0')}`;
-                      const isPastDay = recordDateStr < todayStr;
-                      const stateOnlyEvents: Record<string, { text: string; className: string }> = {
-                        ABSENT: { text: 'Omision', className: 'event-missing' },
-                        HOLIDAY: { text: 'Feriado', className: 'event-holiday' },
-                        PENDING: { text: 'Pendiente', className: 'event-missing' },
-                      };
-                      if (!attendance.entryTime && !attendance.exitTime && stateOnlyEvents[attendance.status]) {
-                        const event = stateOnlyEvents[attendance.status];
-                        return (
-                          <span className={`calendar-event ${event.className}`} key={`${attendance.id}-state`}>
-                            {event.text}
-                            {employees.length > 1 ? ` - ${label}` : ''}
-                            {hasObservation ? ' • obs' : ''}
-                          </span>
-                        );
-                      }
-                      const entryState = getCalendarEntryState(attendance, configuration);
-                      const events = [
-                        attendance.entryTime && {
-                          key: `${attendance.id}-entry`,
-                          text: `${formatTime(attendance.entryTime)} ${entryState.label}`,
-                          className: entryState.className,
-                        },
-                        attendance.exitTime
-                          ? {
-                              key: `${attendance.id}-exit`,
-                              text: `${formatTime(attendance.exitTime)} ${isJustified ? 'Justificado' : 'Normal'}`,
-                              className: isJustified ? 'event-proof' : 'event-ok',
-                            }
-                          : {
-                              key: `${attendance.id}-missing`,
-                              text: isPastDay ? 'Omision' : 'Salida pendiente',
-                              className: 'event-missing',
-                            },
-                      ].filter(Boolean) as Array<{ key: string; text: string; className: string }>;
-
-                      return events.map((event) => (
-                        <span className={`calendar-event ${event.className}`} key={event.key}>
-                          {event.text}
-                          {employees.length > 1 ? ` - ${label}` : ''}
-                          {hasObservation ? ' • obs' : ''}
-                        </span>
-                      ));
-                    })
+                <div className="day-events" style={{ display: 'flex', flexDirection: 'column', gap: '3px', marginTop: '16px', overflow: 'hidden' }}>
+                  {allEvents.slice(0, 2).map((event) => (
+                    <span className={`calendar-event ${event.className}`} key={event.key} style={{ fontSize: '11.5px', padding: '3px 6px' }}>
+                      {event.text}
+                    </span>
+                  ))}
+                  {allEvents.length > 2 && (
+                    <span className="calendar-event" style={{ background: '#e2e8f0', color: '#334155', fontSize: '11px', padding: '2px 6px', fontWeight: '800', textAlign: 'center' }}>
+                      +{allEvents.length - 2} más...
+                    </span>
                   )}
                 </div>
               </article>
@@ -2421,6 +2735,261 @@ function AttendanceHistory({
         />
       )}
     </section>
+  );
+}
+
+function AttendanceLocationMap({
+  location,
+  locationPoints,
+  radiusMeters,
+}: {
+  location: GeoPoint;
+  locationPoints?: LocationPoint[];
+  radiusMeters?: number;
+}) {
+  const mapRef = useRef<HTMLDivElement | null>(null);
+  const [mapSize, setMapSize] = useState({ width: 0, height: 200 });
+  const [mapZoom, setMapZoom] = useState(LOCATION_DEFAULT_ZOOM);
+  const [mapCenter, setMapCenter] = useState({ latitude: location.latitude, longitude: location.longitude });
+  const [dragStart, setDragStart] = useState<{ center: { latitude: number; longitude: number }; x: number; y: number } | null>(null);
+  const dragMovedRef = useRef(false);
+  const points = locationPoints ?? [];
+  const radius = radiusMeters ?? 800;
+
+  useEffect(() => {
+    if (!mapRef.current) return;
+    const updateSize = () => {
+      if (!mapRef.current) return;
+      const rect = mapRef.current.getBoundingClientRect();
+      setMapSize({ width: rect.width, height: rect.height });
+    };
+    updateSize();
+    const observer = new ResizeObserver(updateSize);
+    observer.observe(mapRef.current);
+    return () => observer.disconnect();
+  }, []);
+
+  const centerWorld = locationToWorld(mapCenter.latitude, mapCenter.longitude, mapZoom);
+  const mapStart = { x: centerWorld.x - mapSize.width / 2, y: centerWorld.y - mapSize.height / 2 };
+
+  const mapTiles = useMemo(() => {
+    if (!mapSize.width) return [];
+    const firstTileX = Math.floor(mapStart.x / LOCATION_TILE_SIZE);
+    const lastTileX = Math.floor((mapStart.x + mapSize.width) / LOCATION_TILE_SIZE);
+    const firstTileY = Math.floor(mapStart.y / LOCATION_TILE_SIZE);
+    const lastTileY = Math.floor((mapStart.y + mapSize.height) / LOCATION_TILE_SIZE);
+    const maxTile = 2 ** mapZoom;
+    const tiles: Array<{ key: string; left: number; top: number; x: number; y: number }> = [];
+    for (let x = firstTileX; x <= lastTileX; x += 1) {
+      for (let y = firstTileY; y <= lastTileY; y += 1) {
+        if (y < 0 || y >= maxTile) continue;
+        const wrappedX = ((x % maxTile) + maxTile) % maxTile;
+        tiles.push({ key: `${mapZoom}-${wrappedX}-${y}`, left: x * LOCATION_TILE_SIZE - mapStart.x, top: y * LOCATION_TILE_SIZE - mapStart.y, x: wrappedX, y });
+      }
+    }
+    return tiles;
+  }, [mapSize.width, mapSize.height, mapStart.x, mapStart.y, mapZoom]);
+
+  function zoomMap(nextZoom: number) {
+    const clampedZoom = Math.min(LOCATION_MAX_ZOOM, Math.max(LOCATION_MIN_ZOOM, nextZoom));
+    if (clampedZoom === mapZoom) return;
+    setMapZoom(clampedZoom);
+  }
+
+  function handleMouseDown(event: MouseEvent<HTMLDivElement>) {
+    dragMovedRef.current = false;
+    setDragStart({ center: { ...mapCenter }, x: event.clientX, y: event.clientY });
+  }
+
+  function handleMouseMove(event: MouseEvent<HTMLDivElement>) {
+    if (!dragStart) return;
+    if (Math.abs(event.clientX - dragStart.x) > 3 || Math.abs(event.clientY - dragStart.y) > 3) {
+      dragMovedRef.current = true;
+    }
+    if (!dragMovedRef.current) return;
+    const startWorld = locationToWorld(dragStart.center.latitude, dragStart.center.longitude, mapZoom);
+    const nextWorld = { x: startWorld.x - (event.clientX - dragStart.x), y: startWorld.y - (event.clientY - dragStart.y) };
+    setMapCenter(worldToLocation(nextWorld.x, nextWorld.y, mapZoom));
+  }
+
+  function handleMapWheel(event: WheelEvent) {
+    event.preventDefault();
+    zoomMap(mapZoom + (event.deltaY < 0 ? 1 : -1));
+  }
+
+  useEffect(() => {
+    const mapElement = mapRef.current;
+    if (!mapElement) return;
+    mapElement.addEventListener('wheel', handleMapWheel, { passive: false });
+    return () => mapElement.removeEventListener('wheel', handleMapWheel);
+  }, [mapZoom]);
+
+  const attendanceWorld = locationToWorld(location.latitude, location.longitude, mapZoom);
+  const attendanceLeft = attendanceWorld.x - mapStart.x;
+  const attendanceTop = attendanceWorld.y - mapStart.y;
+  const accuracyPixels = location.accuracy ? metersToPixels(location.accuracy, location.latitude, mapZoom) : 0;
+  const googleMapsUrl = `https://www.google.com/maps?q=${location.latitude},${location.longitude}`;
+
+  return (
+    <div style={{ borderRadius: '12px', overflow: 'hidden', border: '1px solid #cbd5e1', marginTop: '8px' }}>
+      <div
+        ref={mapRef}
+        style={{ position: 'relative', height: '200px', overflow: 'hidden', cursor: 'grab', userSelect: 'none', background: '#e8f4f8' }}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={() => setDragStart(null)}
+        onMouseLeave={() => setDragStart(null)}
+      >
+        {mapTiles.map((tile) => (
+          <img
+            alt=""
+            draggable={false}
+            key={tile.key}
+            src={`https://tile.openstreetmap.org/${mapZoom}/${tile.x}/${tile.y}.png`}
+            style={{ position: 'absolute', left: tile.left, top: tile.top, width: LOCATION_TILE_SIZE, height: LOCATION_TILE_SIZE }}
+          />
+        ))}
+
+        {/* Allowed location points (green circles) */}
+        {points.map((point) => {
+          const w = locationToWorld(point.latitude, point.longitude, mapZoom);
+          const l = w.x - mapStart.x;
+          const t = w.y - mapStart.y;
+          const r = metersToPixels(radius, point.latitude, mapZoom);
+          return (
+            <div key={point.id} style={{ position: 'absolute', pointerEvents: 'none' }}>
+              <span style={{ position: 'absolute', left: l - r, top: t - r, width: r * 2, height: r * 2, border: '2px solid rgba(22,163,74,0.6)', background: 'rgba(22,163,74,0.08)', borderRadius: '50%' }} />
+              <span style={{ position: 'absolute', left: l - 10, top: t - 10, width: 20, height: 20, background: '#16a34a', borderRadius: '50%', border: '2px solid #ffffff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '10px', color: '#fff', fontWeight: '800', boxShadow: '0 2px 4px rgba(0,0,0,0.3)' }} title={point.name}>✓</span>
+            </div>
+          );
+        })}
+
+        {/* Attendance location (red pin) */}
+        {accuracyPixels > 0 && (
+          <span style={{ position: 'absolute', left: attendanceLeft - accuracyPixels, top: attendanceTop - accuracyPixels, width: accuracyPixels * 2, height: accuracyPixels * 2, border: '2px solid rgba(239,68,68,0.45)', background: 'rgba(239,68,68,0.08)', borderRadius: '50%', pointerEvents: 'none' }} />
+        )}
+        <div style={{ position: 'absolute', left: attendanceLeft, top: attendanceTop, transform: 'translate(-50%,-100%)', pointerEvents: 'none', textAlign: 'center' }}>
+          <div style={{ fontSize: '24px', filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.4))' }}>📍</div>
+          {location.accuracy && (
+            <span style={{ background: 'rgba(239,68,68,0.85)', color: '#fff', borderRadius: '6px', fontSize: '10px', fontWeight: '800', padding: '2px 5px', whiteSpace: 'nowrap' }}>
+              ±{Math.round(location.accuracy)} m
+            </span>
+          )}
+        </div>
+
+        {/* Zoom controls */}
+        <div style={{ position: 'absolute', top: '8px', right: '8px', display: 'flex', flexDirection: 'column', gap: '2px' }} onClick={(e) => e.stopPropagation()}>
+          <button type="button" style={{ width: '28px', height: '28px', background: '#fff', border: '1px solid #cbd5e1', borderRadius: '6px', fontWeight: '800', cursor: 'pointer', fontSize: '16px', lineHeight: 1 }} onClick={() => zoomMap(mapZoom + 1)}>+</button>
+          <button type="button" style={{ width: '28px', height: '28px', background: '#fff', border: '1px solid #cbd5e1', borderRadius: '6px', fontWeight: '800', cursor: 'pointer', fontSize: '16px', lineHeight: 1 }} onClick={() => zoomMap(mapZoom - 1)}>−</button>
+        </div>
+
+        {/* OpenStreetMap attribution */}
+        <div style={{ position: 'absolute', bottom: '2px', right: '4px', fontSize: '9px', color: '#555', background: 'rgba(255,255,255,0.75)', padding: '1px 4px', borderRadius: '3px' }}>
+          © OpenStreetMap
+        </div>
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', background: '#f8fafc', borderTop: '1px solid #e2e8f0', fontSize: '12px' }}>
+        <span style={{ color: '#64748b', fontWeight: '600' }}>
+          {location.latitude.toFixed(6)}, {location.longitude.toFixed(6)}
+          {location.accuracy ? ` · ±${Math.round(location.accuracy)} m` : ''}
+        </span>
+        <a href={googleMapsUrl} target="_blank" rel="noreferrer" style={{ color: '#2563eb', fontWeight: '700', textDecoration: 'none', fontSize: '12px' }}>Abrir en Google Maps ↗</a>
+      </div>
+    </div>
+  );
+}
+
+function AttendanceRecordCard({
+  attendance,
+  canManage,
+  employee,
+  onChanged,
+  onExpandPhoto,
+  session,
+}: {
+  attendance: Attendance;
+  canManage?: boolean;
+  employee?: Employee | SessionUser | null;
+  onChanged?: (message: string) => void;
+  onExpandPhoto: (label: string, src: string) => void;
+  session?: SessionUser;
+}) {
+  const [activeTab, setActiveTab] = useState<'entry' | 'exit'>('entry');
+  const isOutside = attendance.notes?.includes('Fuera del radio');
+  const empWithPoints = employee as Employee | null | undefined;
+  const locationPoints = empWithPoints?.locationPoints;
+  const radiusMeters = empWithPoints?.locationRadiusMeters;
+
+  return (
+    <article className="detail-record" style={{ display: 'grid', gap: '14px', padding: '16px', background: '#f8fafc', borderRadius: '16px', border: '1px solid #e2e8f0' }}>
+      <div className="detail-person" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+        <div>
+          <strong style={{ fontSize: '16.5px', color: '#0f172a' }}>{employee?.fullName ?? 'Funcionario'}</strong>
+          <span style={{ display: 'block', fontSize: '13px', color: '#64748b', fontWeight: '700' }}>{employee?.position ?? ''}</span>
+        </div>
+        <div className="carousel-view-tabs" style={{ display: 'flex', background: '#e2e8f0', borderRadius: '12px', padding: '4px', gap: '6px' }}>
+          <button
+            type="button"
+            style={{ border: '0', background: activeTab === 'entry' ? '#0f766e' : 'transparent', color: activeTab === 'entry' ? '#ffffff' : '#334155', padding: '7px 16px', borderRadius: '9px', fontWeight: '800', fontSize: '13px', cursor: 'pointer', transition: 'all 0.2s', boxShadow: activeTab === 'entry' ? '0 2px 6px rgba(15,118,110,0.3)' : 'none' }}
+            onClick={() => setActiveTab('entry')}
+          >
+            📥 Entrada ({formatTime(attendance.entryTime)})
+          </button>
+          <button
+            type="button"
+            style={{ border: '0', background: activeTab === 'exit' ? '#2563eb' : 'transparent', color: activeTab === 'exit' ? '#ffffff' : '#334155', padding: '7px 16px', borderRadius: '9px', fontWeight: '800', fontSize: '13px', cursor: 'pointer', transition: 'all 0.2s', boxShadow: activeTab === 'exit' ? '0 2px 6px rgba(37,99,235,0.3)' : 'none' }}
+            onClick={() => setActiveTab('exit')}
+          >
+            📤 Salida ({formatTime(attendance.exitTime)})
+          </button>
+        </div>
+      </div>
+
+      <div className="carousel-content-area" style={{ transition: 'opacity 0.2s ease-in-out', minHeight: '110px' }}>
+        {activeTab === 'entry' ? (
+          <MarkDetail
+            label="Entrada"
+            location={attendance.entryLocation}
+            locationPoints={locationPoints}
+            radiusMeters={radiusMeters}
+            observation={attendance.entryObservation}
+            photo={attendance.entryPhotoDataUrl}
+            time={attendance.entryTime}
+            onExpandPhoto={onExpandPhoto}
+          />
+        ) : (
+          <MarkDetail
+            label="Salida"
+            location={attendance.exitLocation}
+            locationPoints={locationPoints}
+            radiusMeters={radiusMeters}
+            observation={attendance.exitObservation}
+            photo={attendance.exitPhotoDataUrl}
+            time={attendance.exitTime}
+            onExpandPhoto={onExpandPhoto}
+          />
+        )}
+      </div>
+
+      {attendance.notes && (
+        <div style={{ padding: '12px 14px', background: isOutside ? '#fef2f2' : '#ecfdf5', border: `1px solid ${isOutside ? '#fecdd3' : '#a7f3d0'}`, borderRadius: '12px', fontSize: '13px', fontWeight: '800', color: isOutside ? '#991b1b' : '#065f46', display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span style={{ fontSize: '16px' }}>{isOutside ? '⚠️' : '📍'}</span>
+          <span>{attendance.notes}</span>
+        </div>
+      )}
+
+      {attendance.justificationNote && (
+        <p className="attendance-note">Justificativo: {attendance.justificationNote}</p>
+      )}
+
+      {canManage && onChanged && (
+        <div className="row-actions" style={{ paddingTop: '10px', borderTop: '1px solid #cbd5e1' }}>
+          <button onClick={() => deleteMark(attendance.id, 'entry', onChanged, session)}>Eliminar entrada</button>
+          <button onClick={() => deleteMark(attendance.id, 'exit', onChanged, session)}>Eliminar salida</button>
+          <button onClick={() => deleteMark(attendance.id, 'all', onChanged, session)}>Eliminar registro</button>
+        </div>
+      )}
+    </article>
   );
 }
 
@@ -2476,39 +3045,15 @@ function AttendanceDayModal({
             const employee = employees.find((item) => item.id === attendance.employeeId);
 
             return (
-              <article className="detail-record" key={attendance.id}>
-                <div className="detail-person">
-                  <strong>{employee?.fullName ?? 'Funcionario'}</strong>
-                  <span>{employee?.position ?? ''}</span>
-                </div>
-                <MarkDetail
-                  label="Entrada"
-                  location={attendance.entryLocation}
-                  observation={attendance.entryObservation}
-                  photo={attendance.entryPhotoDataUrl}
-                  time={attendance.entryTime}
-                  onExpandPhoto={(label, src) => setExpandedPhoto({ label, src })}
-                />
-                <MarkDetail
-                  label="Salida"
-                  location={attendance.exitLocation}
-                  observation={attendance.exitObservation}
-                  photo={attendance.exitPhotoDataUrl}
-                  time={attendance.exitTime}
-                  onExpandPhoto={(label, src) => setExpandedPhoto({ label, src })}
-                />
-                {attendance.notes && <p className="attendance-note">{attendance.notes}</p>}
-                {attendance.justificationNote && (
-                  <p className="attendance-note">Justificativo: {attendance.justificationNote}</p>
-                )}
-                {canManage && onChanged && (
-                  <div className="row-actions">
-                    <button onClick={() => deleteMark(attendance.id, 'entry', onChanged, session)}>Eliminar entrada</button>
-                    <button onClick={() => deleteMark(attendance.id, 'exit', onChanged, session)}>Eliminar salida</button>
-                    <button onClick={() => deleteMark(attendance.id, 'all', onChanged, session)}>Eliminar registro</button>
-                  </div>
-                )}
-              </article>
+              <AttendanceRecordCard
+                key={attendance.id}
+                attendance={attendance}
+                canManage={canManage}
+                employee={employee}
+                onChanged={onChanged}
+                onExpandPhoto={(label, src) => setExpandedPhoto({ label, src })}
+                session={session}
+              />
             );
           })}
         </div>
@@ -2762,6 +3307,8 @@ function AdminAttendanceEditor({
 function MarkDetail({
   label,
   location,
+  locationPoints,
+  radiusMeters,
   onExpandPhoto,
   observation,
   photo,
@@ -2769,14 +3316,14 @@ function MarkDetail({
 }: {
   label: string;
   location?: GeoPoint;
+  locationPoints?: LocationPoint[];
+  radiusMeters?: number;
   onExpandPhoto?: (label: string, src: string) => void;
   observation?: string | null;
   photo?: string | null;
   time: string | null;
 }) {
-  const mapUrl = location
-    ? `https://www.google.com/maps?q=${location.latitude},${location.longitude}`
-    : '';
+  const [showMap, setShowMap] = useState(false);
   const photoSrc = photo ? assetUrl(photo) : '';
 
   return (
@@ -2785,9 +3332,23 @@ function MarkDetail({
         <span>{label}</span>
         <strong>{formatTime(time)}</strong>
         {location ? (
-          <a href={mapUrl} rel="noreferrer" target="_blank">
-            Ver ubicacion ({location.accuracy ? `${Math.round(location.accuracy)} m` : 'GPS'})
-          </a>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '4px' }}>
+            <button
+              type="button"
+              onClick={() => setShowMap((v) => !v)}
+              style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: '#2563eb', fontWeight: '700', fontSize: '13px', textAlign: 'left', display: 'flex', alignItems: 'center', gap: '4px' }}
+            >
+              <span>🗺️</span>
+              <span>{showMap ? 'Ocultar mapa' : `Ver en mapa (±${location.accuracy ? Math.round(location.accuracy) : '?'} m)`}</span>
+            </button>
+            {showMap && (
+              <AttendanceLocationMap
+                location={location}
+                locationPoints={locationPoints}
+                radiusMeters={radiusMeters}
+              />
+            )}
+          </div>
         ) : (
           <small>Sin ubicacion</small>
         )}

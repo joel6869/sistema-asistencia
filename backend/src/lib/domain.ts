@@ -15,7 +15,9 @@ export interface LocationPoint {
   longitude: number;
 }
 
+// Always compute Bolivia offset from UTC, not from server local time
 export function getBoliviaTime(date: Date) {
+  // date.getTime() is always UTC milliseconds
   return new Date(date.getTime() - 4 * 60 * 60 * 1000);
 }
 
@@ -27,15 +29,21 @@ export function getDateKey(date: Date) {
   return `${year}-${month}-${day}`;
 }
 
+// For 'timestamp without time zone' columns: Prisma constructs Date using server LOCAL TZ
+// In Europe/Paris (UTC+2): '2026-07-15 00:00:00' DB → new Date = 2026-07-14T22:00:00Z
+// getUTCDate() would give 14 (wrong). getDate() gives 15 (correct local/stored value).
 export function getUtcDateKey(date: Date) {
-  const year = date.getUTCFullYear();
-  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
-  const day = String(date.getUTCDate()).padStart(2, '0');
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
 }
 
+// getDayStart: creates UTC midnight for a Bolivia date — matches how DB stores timestamps
+// Existing records: stored as '2026-07-15T00:00:00.000Z' in UTC (via Prisma)
 export function getDayStart(date: Date) {
-  return new Date(`${getDateKey(date)}T00:00:00.000Z`);
+  const boliviaDateStr = getDateKey(date); // e.g. '2026-07-15' in Bolivia time
+  return new Date(`${boliviaDateStr}T00:00:00.000Z`);
 }
 
 export function calculateLateMinutes(date: Date, entryTime: string) {
@@ -71,7 +79,7 @@ export function normalizeLocationPoints(value: unknown): LocationPoint[] {
   if (!Array.isArray(value)) return [];
 
   const points: Array<LocationPoint | null> = value
-    .slice(0, 20)
+    .slice(0, 50)
     .map((item, index) => {
       if (!item || typeof item !== 'object') return null;
       const point = item as Partial<LocationPoint>;

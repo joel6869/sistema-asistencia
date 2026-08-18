@@ -117,7 +117,9 @@ export function clearLoginAttempts(key: string) {
 
 export async function requireAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   const header = req.header('authorization') ?? '';
-  const token = header.startsWith('Bearer ') ? header.slice('Bearer '.length) : '';
+  // Also accept token as query param for SSE connections (EventSource can't set headers)
+  const queryToken = typeof req.query.token === 'string' ? req.query.token : '';
+  const token = header.startsWith('Bearer ') ? header.slice('Bearer '.length) : queryToken;
   const payload = token ? verifyAuthToken(token) : null;
 
   if (!payload) {

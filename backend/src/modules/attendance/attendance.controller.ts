@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { Request, Response } from 'express';
 import { AttendanceStatus } from '@prisma/client';
 import {
@@ -14,6 +15,7 @@ import {
 import { writeAuditLog } from '../../lib/audit.js';
 import { prisma } from '../../lib/prisma.js';
 import { AuthenticatedRequest, cleanText, isValidGeoPoint, isValidIsoDate, isValidTime } from '../../lib/security.js';
+import { addSseClient, broadcastAttendanceUpdate } from '../../lib/sse.js';
 
 interface AttendancePayload {
   ci: string;
@@ -47,6 +49,11 @@ export async function listAttendances(_req: Request, res: Response) {
     data: attendances.map(serializeAttendance),
     total: attendances.length,
   });
+}
+
+export function subscribeAttendances(req: AuthenticatedRequest & Request, res: Response) {
+  const clientId = crypto.randomUUID();
+  addSseClient(clientId, res);
 }
 
 export async function getAttendanceSummary(_req: Request, res: Response) {
@@ -256,10 +263,13 @@ export async function registerAttendance(req: AuthenticatedRequest & Request<unk
       },
     });
 
+    const serialized = serializeAttendance(attendance);
+    broadcastAttendanceUpdate(serialized);
+
     res.status(201).json({
       message,
       serverTime: serverTime.toISOString(),
-      data: serializeAttendance(attendance),
+      data: serialized,
     });
     return;
   }
@@ -316,10 +326,13 @@ export async function registerAttendance(req: AuthenticatedRequest & Request<unk
     },
   });
 
+  const serializedExit = serializeAttendance(attendance);
+  broadcastAttendanceUpdate(serializedExit);
+
   res.status(201).json({
     message: 'Salida registrada correctamente',
     serverTime: serverTime.toISOString(),
-    data: serializeAttendance(attendance),
+    data: serializedExit,
   });
 }
 
@@ -448,9 +461,12 @@ export async function saveAdminAttendance(
     },
   });
 
+  const serializedAdmin = serializeAttendance(attendance);
+  broadcastAttendanceUpdate(serializedAdmin);
+
   res.status(200).json({
     message: 'Marcado actualizado correctamente',
-    data: serializeAttendance(attendance),
+    data: serializedAdmin,
   });
 }
 
@@ -510,6 +526,7 @@ export async function deleteAttendanceMark(
         status: attendance.status,
       },
     });
+    broadcastAttendanceUpdate({ id: attendance.id, deleted: true });
     res.status(200).json({ message: 'Registro eliminado correctamente' });
     return;
   }
@@ -556,9 +573,12 @@ export async function deleteAttendanceMark(
     },
   });
 
+  const serializedDeleted = serializeAttendance(updated);
+  broadcastAttendanceUpdate(serializedDeleted);
+
   res.status(200).json({
     message: 'Marcado eliminado correctamente',
-    data: serializeAttendance(updated),
+    data: serializedDeleted,
   });
 }
 
@@ -582,13 +602,17 @@ function getEntryLocationNote(
     }))
     .sort((a, b) => a.distanceMeters - b.distanceMeters)[0];
 
-  if (!closest || closest.distanceMeters <= radiusMeters) {
+  if (!closest) {
     return null;
   }
 
-  return `Entrada fuera del radio permitido. Punto mas cercano: ${closest.point.name}, distancia aproximada ${Math.round(
-    closest.distanceMeters,
-  )} m`;
+  const roundedDistance = Math.round(closest.distanceMeters);
+
+  if (closest.distanceMeters <= radiusMeters) {
+    return `Entrada dentro del rango. Punto: ${closest.point.name} (distancia aprox. ${roundedDistance} m)`;
+  }
+
+  return `Entrada fuera del radio permitido. Punto mas cercano: ${closest.point.name}, distancia aproximada ${roundedDistance} m`;
 }
 
 function isOutsideAreaAttendance(notes: string | null) {
