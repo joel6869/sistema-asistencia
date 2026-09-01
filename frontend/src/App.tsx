@@ -1,4 +1,4 @@
-import { FormEvent, MouseEvent, SyntheticEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { type FormEvent, type MouseEvent, type SyntheticEvent, useEffect, useMemo, useRef, useState } from 'react';
 import './styles.css';
 import {
   exportAllEmployeesExcel,
@@ -622,7 +622,7 @@ export default function App() {
 
         {session.role === 'EMPLOYEE' && view === 'today' && (
           <EmployeeToday
-            attendance={currentUserAttendance}
+            attendance={currentUserAttendance ?? null}
             attendances={attendances}
             onRegistered={(text, tone = 'info') => {
               showToast(text, tone);
@@ -2720,11 +2720,11 @@ function buildExportTableHtml(rows: Array<Record<ExportColumnKey, string>>, colu
 
 function escapeHtml(value: string) {
   return value
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#039;');
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
 }
 
 function auditActionLabel(action: string) {
