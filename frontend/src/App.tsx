@@ -748,7 +748,7 @@ function LoginScreen({ onLoggedIn }: { onLoggedIn: (user: SessionUser) => void }
           <div className="login-brand-stack">
             <img
               src="/logo-ministerio.png"
-              alt="Ministerio de Desarrollo Productivo Rural y Agua"
+              alt="Ministerio de Producción Sostenible, Medio Ambiente y Agua"
               onError={useImageFallback('/brand-ministry.svg')}
             />
             <img
