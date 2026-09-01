@@ -35,6 +35,9 @@ interface AdminAttendancePayload {
   entryObservation?: string | null;
   exitObservation?: string | null;
   justificationNote?: string | null;
+  entryPhotoDataUrl?: string | null;
+  exitPhotoDataUrl?: string | null;
+  outsideArea?: boolean | null;
 }
 
 export async function listAttendances(_req: Request, res: Response) {
@@ -350,6 +353,9 @@ export async function saveAdminAttendance(
     entryObservation = null,
     exitObservation = null,
     justificationNote = null,
+    entryPhotoDataUrl = null,
+    exitPhotoDataUrl = null,
+    outsideArea = null,
   } = req.body;
 
   if (!employeeId || !isValidIsoDate(attendanceDate)) {
@@ -402,6 +408,28 @@ export async function saveAdminAttendance(
       },
     },
   });
+
+  let entryPhotoUrl: string | null | undefined = undefined;
+  if (entryPhotoDataUrl && entryPhotoDataUrl.startsWith('data:image/')) {
+    entryPhotoUrl = saveAttendancePhoto(entryPhotoDataUrl, employeeId, 'ENTRY') ?? undefined;
+  }
+
+  let exitPhotoUrl: string | null | undefined = undefined;
+  if (exitPhotoDataUrl && exitPhotoDataUrl.startsWith('data:image/')) {
+    exitPhotoUrl = saveAttendancePhoto(exitPhotoDataUrl, employeeId, 'EXIT') ?? undefined;
+  }
+
+  let finalNotes = cleanText(notes, 500);
+  if (outsideArea === true) {
+    if (!finalNotes?.includes('Entrada fuera del radio permitido')) {
+      finalNotes = finalNotes ? `${finalNotes} · Entrada fuera del radio permitido` : 'Entrada fuera del radio permitido';
+    }
+  } else if (outsideArea === false) {
+    if (finalNotes?.includes('Entrada fuera del radio permitido')) {
+      finalNotes = finalNotes.replace(/·?\s*Entrada fuera del radio permitido[^·]*/g, '').trim() || null;
+    }
+  }
+
   const attendance = await prisma.attendance.upsert({
     where: {
       employeeId_attendanceDate: {
@@ -415,9 +443,11 @@ export async function saveAdminAttendance(
       attendanceDate: date,
       entryTime: entryDateTime,
       exitTime: exitDateTime,
+      entryPhotoUrl: entryPhotoUrl ?? null,
+      exitPhotoUrl: exitPhotoUrl ?? null,
       lateMinutes: calculatedLateMinutes,
       status: finalStatus,
-      notes: cleanText(notes, 500),
+      notes: finalNotes,
       entryObservation: cleanText(entryObservation, 500),
       exitObservation: cleanText(exitObservation, 500),
       justificationNote: cleanText(justificationNote, 500),
@@ -425,9 +455,11 @@ export async function saveAdminAttendance(
     update: {
       entryTime: entryDateTime,
       exitTime: exitDateTime,
+      ...(entryPhotoUrl !== undefined ? { entryPhotoUrl } : {}),
+      ...(exitPhotoUrl !== undefined ? { exitPhotoUrl } : {}),
       lateMinutes: calculatedLateMinutes,
       status: finalStatus,
-      notes: cleanText(notes, 500),
+      notes: finalNotes,
       entryObservation: cleanText(entryObservation, 500),
       exitObservation: cleanText(exitObservation, 500),
       justificationNote: cleanText(justificationNote, 500),

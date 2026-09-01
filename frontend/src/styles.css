@@ -2615,17 +2615,48 @@ th {
 /* Modal de Confirmacion y Validacion de Entrada con Ubicacion */
 .entry-confirm-modal {
   margin: auto;
-  width: min(840px, 95vw);
-  max-height: min(860px, 94dvh);
+  width: min(720px, 95vw);
+  max-height: min(880px, 92dvh);
   display: flex;
   flex-direction: column;
   gap: 16px;
   border-radius: 20px;
-  padding: 24px;
+  padding: 22px 20px 22px 24px;
   background: #ffffff;
-  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
-  overflow-y: auto;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.4);
+  overflow-y: scroll;
+  scrollbar-width: auto;
+  scrollbar-color: #0f766e #e2e8f0;
   animation: fadeInEntryModal 0.2s ease-out;
+}
+
+/* Scrollbar prominente y notorio en navegadores WebKit/Chromium/Android */
+.entry-confirm-modal::-webkit-scrollbar {
+  width: 10px;
+  display: block;
+}
+
+.entry-confirm-modal::-webkit-scrollbar-track {
+  background: #f1f5f9;
+  border-radius: 8px;
+  margin: 6px 0;
+  border: 1px solid #e2e8f0;
+}
+
+.entry-confirm-modal::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #0f766e 0%, #0d9488 100%);
+  border-radius: 8px;
+  border: 2px solid #f1f5f9;
+}
+
+.entry-confirm-modal::-webkit-scrollbar-thumb:hover {
+  background: #115e59;
+}
+
+.entry-confirm-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 
 @keyframes fadeInEntryModal {

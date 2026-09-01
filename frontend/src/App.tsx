@@ -1147,48 +1147,47 @@ function EntryConfirmationModal({
           </div>
         )}
 
-        <div className="entry-confirm-grid">
-          <div className="entry-confirm-left">
-            <div className="entry-photo-card">
-              <img src={photoDataUrl} alt="Foto de evidencia capturada" className="entry-photo-preview" />
-              <div className="entry-photo-overlay">
-                <span>📸 Foto de evidencia</span>
-              </div>
-            </div>
-
-            <label className="entry-confirm-notes">
-              <span>Observación de entrada (opcional)</span>
-              <textarea
-                placeholder="Escribe una observación si necesitas aclarar algún detalle..."
-                value={observation}
-                onChange={(e) => onObservationChange(e.target.value)}
-                rows={3}
-              />
-            </label>
-          </div>
-
-          <div className="entry-confirm-right">
-            <div className="entry-map-wrapper">
-              <div className="entry-map-title">
-                <span>🗺️ Mapa de tu ubicación</span>
-                {location && (
-                  <span className="entry-coords">
-                    {location.latitude.toFixed(5)}, {location.longitude.toFixed(5)}
-                  </span>
-                )}
-              </div>
-              {location ? (
-                <AttendanceLocationMap
-                  location={location}
-                  locationPoints={points}
-                  radiusMeters={radiusMeters}
-                  height={280}
-                />
-              ) : (
-                <div className="entry-no-map">No se pudo cargar la vista del mapa sin GPS.</div>
+        <div className="entry-confirm-stack">
+          {/* 1. Mapa de tu ubicacion */}
+          <div className="entry-map-wrapper">
+            <div className="entry-map-title">
+              <span>🗺️ Mapa de tu ubicación</span>
+              {location && (
+                <span className="entry-coords">
+                  {location.latitude.toFixed(5)}, {location.longitude.toFixed(5)}
+                </span>
               )}
             </div>
+            {location ? (
+              <AttendanceLocationMap
+                location={location}
+                locationPoints={points}
+                radiusMeters={radiusMeters}
+                height={260}
+              />
+            ) : (
+              <div className="entry-no-map">No se pudo cargar la vista del mapa sin GPS.</div>
+            )}
           </div>
+
+          {/* 2. Foto de evidencia */}
+          <div className="entry-photo-card">
+            <img src={photoDataUrl} alt="Foto de evidencia capturada" className="entry-photo-preview" />
+            <div className="entry-photo-overlay">
+              <span>📸 Foto de evidencia</span>
+            </div>
+          </div>
+
+          {/* 3. Observacion de entrada */}
+          <label className="entry-confirm-notes">
+            <span>Observación de entrada (opcional)</span>
+            <textarea
+              placeholder="Escribe una observación si necesitas aclarar algún detalle..."
+              value={observation}
+              onChange={(e) => onObservationChange(e.target.value)}
+              rows={3}
+            />
+          </label>
         </div>
 
         <footer className="entry-confirm-actions">
@@ -3537,6 +3536,11 @@ function AdminAttendanceEditor({
     entryTime: '',
     exitTime: '',
     status: 'AUTO',
+    outsideArea: false,
+    entryPhotoDataUrl: '',
+    entryPhotoPreview: '',
+    exitPhotoDataUrl: '',
+    exitPhotoPreview: '',
     notes: '',
     entryObservation: '',
     exitObservation: '',
@@ -3546,10 +3550,16 @@ function AdminAttendanceEditor({
 
   useEffect(() => {
     const status = selectedRecord?.status && ['PRESENT', 'LATE'].includes(selectedRecord.status) ? 'AUTO' : selectedRecord?.status ?? 'AUTO';
+    const isOutside = selectedRecord ? hasOutsideAreaNote(selectedRecord) : false;
     setForm({
       entryTime: timeInputValue(selectedRecord?.entryTime ?? null),
       exitTime: timeInputValue(selectedRecord?.exitTime ?? null),
       status,
+      outsideArea: isOutside,
+      entryPhotoDataUrl: '',
+      entryPhotoPreview: selectedRecord?.entryPhotoDataUrl ?? '',
+      exitPhotoDataUrl: '',
+      exitPhotoPreview: selectedRecord?.exitPhotoDataUrl ?? '',
       notes: selectedRecord?.notes ?? '',
       entryObservation: selectedRecord?.entryObservation ?? '',
       exitObservation: selectedRecord?.exitObservation ?? '',
@@ -3568,6 +3578,9 @@ function AdminAttendanceEditor({
         entryTime: form.entryTime || null,
         exitTime: form.exitTime || null,
         status: form.status,
+        outsideArea: form.outsideArea,
+        entryPhotoDataUrl: form.entryPhotoDataUrl || null,
+        exitPhotoDataUrl: form.exitPhotoDataUrl || null,
         notes: form.notes || null,
         entryObservation: form.entryObservation || null,
         exitObservation: form.exitObservation || null,
@@ -3612,6 +3625,59 @@ function AdminAttendanceEditor({
         <strong>{automaticPreview.title}</strong>
         <span>{automaticPreview.detail}</span>
       </div>
+
+      <label style={{ display: 'flex', flexDirection: 'column', gap: '4px', fontSize: '13px', fontWeight: '700', color: '#334155' }}>
+        <span>Estado de ubicación (Radio GPS)</span>
+        <select
+          value={form.outsideArea ? 'OUTSIDE' : 'INSIDE'}
+          onChange={(event) => setForm({ ...form, outsideArea: event.target.value === 'OUTSIDE' })}
+          style={{
+            padding: '10px 12px',
+            borderRadius: '10px',
+            border: form.outsideArea ? '1.5px solid #f87171' : '1.5px solid #86efac',
+            background: form.outsideArea ? '#fef2f2' : '#f0fdf4',
+            fontWeight: '800',
+            color: form.outsideArea ? '#991b1b' : '#166534',
+          }}
+        >
+          <option value="INSIDE">✅ Dentro de radio permitido</option>
+          <option value="OUTSIDE">⚠️ Fuera de radio permitido</option>
+        </select>
+      </label>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', padding: '12px', background: '#f8fafc', borderRadius: '12px', border: '1px solid #e2e8f0' }}>
+        <label style={{ fontSize: '13px', fontWeight: '700', color: '#334155' }}>
+          Foto de evidencia (Entrada)
+        </label>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+          {form.entryPhotoPreview ? (
+            <div style={{ position: 'relative', width: '70px', height: '70px', borderRadius: '10px', overflow: 'hidden', border: '1.5px solid #cbd5e1' }}>
+              <img
+                src={form.entryPhotoPreview.startsWith('data:') ? form.entryPhotoPreview : assetUrl(form.entryPhotoPreview)}
+                alt="Evidencia entrada"
+                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+              />
+            </div>
+          ) : (
+            <div style={{ width: '70px', height: '70px', borderRadius: '10px', border: '1.5px dashed #cbd5e1', display: 'grid', placeItems: 'center', color: '#94a3b8', fontSize: '11px', textAlign: 'center', padding: '4px' }}>
+              Sin foto
+            </div>
+          )}
+          <input
+            type="file"
+            accept="image/*"
+            onChange={async (event) => {
+              const file = event.target.files?.[0];
+              if (file) {
+                const dataUrl = await readFileAsDataUrl(file);
+                setForm({ ...form, entryPhotoDataUrl: dataUrl, entryPhotoPreview: dataUrl });
+              }
+            }}
+            style={{ fontSize: '12.5px', maxWidth: '240px' }}
+          />
+        </div>
+      </div>
+
       <textarea placeholder="Observacion de entrada" value={form.entryObservation} onChange={(event) => setForm({ ...form, entryObservation: event.target.value })} />
       <textarea placeholder="Observacion de salida" value={form.exitObservation} onChange={(event) => setForm({ ...form, exitObservation: event.target.value })} />
       <textarea placeholder="Justificativo presentado" value={form.justificationNote} onChange={(event) => setForm({ ...form, justificationNote: event.target.value })} />
