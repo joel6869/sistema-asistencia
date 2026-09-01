@@ -624,6 +624,7 @@ export default function App() {
               loadData();
             }}
             user={session}
+            employee={employees.find((e) => e.ci === session.ci) ?? employees[0]}
           />
         )}
 
@@ -776,17 +777,24 @@ function EmployeeToday({
   attendances,
   onRegistered,
   user,
+  employee,
 }: {
   attendance: Attendance | null;
   attendances: Attendance[];
   onRegistered: (message: string, tone?: 'success' | 'error' | 'info') => void;
   user: SessionUser;
+  employee?: Employee;
 }) {
   const [pendingType, setPendingType] = useState<AttendanceType | null>(null);
   const [working, setWorking] = useState(false);
   const [entryObservation, setEntryObservation] = useState('');
   const [exitObservation, setExitObservation] = useState('');
   const [gpsProgress, setGpsProgress] = useState<number | null>(null);
+  const [pendingEntryConfirmation, setPendingEntryConfirmation] = useState<{
+    photoDataUrl: string;
+    location?: GeoPoint;
+    observation: string;
+  } | null>(null);
   const monthlyLateMinutes = getMonthlyLateMinutes(attendances);
 
   function requestRegistration(type: AttendanceType) {
@@ -801,6 +809,52 @@ function EmployeeToday({
     }
 
     setPendingType(type);
+  }
+
+  async function submitAttendance(
+    type: AttendanceType,
+    photoDataUrl: string,
+    location?: GeoPoint,
+    observation?: string,
+  ) {
+    setWorking(true);
+    onRegistered('Registrando asistencia...');
+    try {
+      const response = await fetch(`${API_URL}/attendances/register`, {
+        method: 'POST',
+        headers: authHeaders(user, { 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
+          ci: user.ci,
+          type,
+          location,
+          observation: observation ?? (type === 'ENTRY' ? entryObservation : exitObservation),
+          photoDataUrl,
+        }),
+      });
+      const body = await response.json();
+
+      if (!response.ok) {
+        onRegistered(body.message ?? 'No se pudo registrar.', 'error');
+        return;
+      }
+
+      const locationMessage = location
+        ? `${body.message}. Ubicacion registrada con precision aproximada de ${Math.round(
+            location.accuracy ?? 0,
+          )} m.`
+        : `${body.message}. Se guardo sin ubicacion.`;
+      onRegistered(locationMessage, 'success');
+      if (type === 'ENTRY') {
+        setEntryObservation('');
+        setPendingEntryConfirmation(null);
+      } else {
+        setExitObservation('');
+      }
+    } catch {
+      onRegistered('No se pudo conectar con el backend.', 'error');
+    } finally {
+      setWorking(false);
+    }
   }
 
   async function register(type: AttendanceType, photoDataUrl: string) {
@@ -830,40 +884,24 @@ function EmployeeToday({
         });
         setGpsProgress(null);
       }
-      onRegistered('GPS obtenido. Registrando asistencia...');
-      const response = await fetch(`${API_URL}/attendances/register`, {
-        method: 'POST',
-        headers: authHeaders(user, { 'Content-Type': 'application/json' }),
-        body: JSON.stringify({
-          ci: user.ci,
-          type,
-          location,
-          observation: type === 'ENTRY' ? entryObservation : exitObservation,
-          photoDataUrl,
-        }),
-      });
-      const body = await response.json();
 
-      if (!response.ok) {
-        onRegistered(body.message ?? 'No se pudo registrar.', 'error');
+      // If it's ENTRY: Open confirmation modal showing location and radius status before saving
+      if (type === 'ENTRY') {
+        setWorking(false);
+        setPendingEntryConfirmation({
+          photoDataUrl,
+          location,
+          observation: entryObservation,
+        });
         return;
       }
 
-      const locationMessage = location
-        ? `${body.message}. Ubicacion registrada con precision aproximada de ${Math.round(
-            location.accuracy ?? 0,
-          )} m.`
-        : `${body.message}. Se guardo sin ubicacion.`;
-      onRegistered(locationMessage, 'success');
-      if (type === 'ENTRY') {
-        setEntryObservation('');
-      } else {
-        setExitObservation('');
-      }
+      // If it's EXIT: Save directly as before
+      await submitAttendance('EXIT', photoDataUrl, location, exitObservation);
     } catch {
       onRegistered('No se pudo conectar con el backend.', 'error');
-    } finally {
       setWorking(false);
+    } finally {
       setGpsProgress(null);
     }
   }
@@ -976,6 +1014,7 @@ function EmployeeToday({
       {pendingType && (
         <CameraModal
           title={pendingType === 'ENTRY' ? 'Fotografia para entrada' : 'Fotografia para salida'}
+          confirmButtonText={pendingType === 'ENTRY' ? 'Continuar con ubicación' : 'Guardar registro'}
           observation={pendingType === 'ENTRY' ? entryObservation : exitObservation}
           observationLabel={pendingType === 'ENTRY' ? 'Observacion de entrada' : 'Observacion de salida'}
           onObservationChange={pendingType === 'ENTRY' ? setEntryObservation : setExitObservation}
@@ -983,6 +1022,189 @@ function EmployeeToday({
           onConfirm={(photoDataUrl) => register(pendingType, photoDataUrl)}
         />
       )}
+
+      {pendingEntryConfirmation && (
+        <EntryConfirmationModal
+          employee={employee}
+          loading={working}
+          location={pendingEntryConfirmation.location}
+          observation={pendingEntryConfirmation.observation}
+          onCancel={() => {
+            setPendingEntryConfirmation(null);
+            onRegistered('Registro de entrada cancelado.', 'info');
+          }}
+          onConfirm={() => {
+            submitAttendance(
+              'ENTRY',
+              pendingEntryConfirmation.photoDataUrl,
+              pendingEntryConfirmation.location,
+              pendingEntryConfirmation.observation,
+            );
+          }}
+          onObservationChange={(val) => {
+            setPendingEntryConfirmation((prev) => (prev ? { ...prev, observation: val } : null));
+          }}
+          photoDataUrl={pendingEntryConfirmation.photoDataUrl}
+        />
+      )}
+    </div>
+  );
+}
+
+function EntryConfirmationModal({
+  photoDataUrl,
+  location,
+  employee,
+  observation,
+  onObservationChange,
+  onConfirm,
+  onCancel,
+  loading,
+}: {
+  photoDataUrl: string;
+  location?: GeoPoint;
+  employee?: Employee;
+  observation: string;
+  onObservationChange: (value: string) => void;
+  onConfirm: () => void;
+  onCancel: () => void;
+  loading: boolean;
+}) {
+  const points = employee?.locationPoints ?? [];
+  const radiusMeters = employee?.locationRadiusMeters ?? 800;
+  const isControlEnabled = Boolean(employee?.locationControlEnabled) && points.length > 0;
+
+  const closest = useMemo(() => {
+    if (!location || !isControlEnabled || points.length === 0) return null;
+    const sorted = points
+      .map((p) => ({
+        point: p,
+        distance: calculateDistanceMeters(location, p),
+      }))
+      .sort((a, b) => a.distance - b.distance);
+    return sorted[0] ?? null;
+  }, [location, isControlEnabled, points]);
+
+  const isInside = closest ? closest.distance <= radiusMeters : true;
+  const roundedDistance = closest ? Math.round(closest.distance) : null;
+  const roundedAccuracy = location?.accuracy ? Math.round(location.accuracy) : null;
+
+  return (
+    <div className="camera-backdrop" style={{ zIndex: 30 }}>
+      <section className="entry-confirm-modal">
+        <header className="entry-confirm-header">
+          <div>
+            <span className="entry-confirm-badge">Marcación de Entrada</span>
+            <h3>Revisión y Confirmación de Ubicación</h3>
+            <p className="entry-confirm-sub">Verifica tu fotografía y posición antes de registrar tu ingreso oficial.</p>
+          </div>
+          <button className="entry-confirm-close" type="button" onClick={onCancel} aria-label="Cancelar">
+            ✕
+          </button>
+        </header>
+
+        {isControlEnabled ? (
+          isInside ? (
+            <div className="entry-status-banner in-range">
+              <div className="status-icon">✅</div>
+              <div>
+                <strong>Estás dentro del área permitida</strong>
+                <span>
+                  Punto validado: <strong>{closest?.point.name}</strong> · Distancia aprox: <strong>{roundedDistance} m</strong> (Límite: {radiusMeters} m)
+                  {roundedAccuracy !== null ? ` · Precisión GPS: ±${roundedAccuracy} m` : ''}
+                </span>
+              </div>
+            </div>
+          ) : (
+            <div className="entry-status-banner out-of-range">
+              <div className="status-icon">⚠️</div>
+              <div>
+                <strong>Estás fuera del radio permitido</strong>
+                <span>
+                  Punto más cercano: <strong>{closest?.point.name}</strong> · Distancia aprox: <strong>{roundedDistance} m</strong> (Radio permitido: {radiusMeters} m)
+                  {roundedAccuracy !== null ? ` · Precisión GPS: ±${roundedAccuracy} m` : ''}
+                </span>
+                <small>Nota: Puedes confirmar tu marcación, pero se guardará registrada con la observación de estar fuera del rango permitido.</small>
+              </div>
+            </div>
+          )
+        ) : (
+          <div className="entry-status-banner info">
+            <div className="status-icon">📍</div>
+            <div>
+              <strong>Ubicación GPS capturada</strong>
+              <span>
+                {location
+                  ? `Coordenadas: ${location.latitude.toFixed(6)}, ${location.longitude.toFixed(6)}${roundedAccuracy !== null ? ` · Precisión: ±${roundedAccuracy} m` : ''}`
+                  : 'Sin coordenadas GPS'}
+              </span>
+            </div>
+          </div>
+        )}
+
+        <div className="entry-confirm-grid">
+          <div className="entry-confirm-left">
+            <div className="entry-photo-card">
+              <img src={photoDataUrl} alt="Foto de evidencia capturada" className="entry-photo-preview" />
+              <div className="entry-photo-overlay">
+                <span>📸 Foto de evidencia</span>
+              </div>
+            </div>
+
+            <label className="entry-confirm-notes">
+              <span>Observación de entrada (opcional)</span>
+              <textarea
+                placeholder="Escribe una observación si necesitas aclarar algún detalle..."
+                value={observation}
+                onChange={(e) => onObservationChange(e.target.value)}
+                rows={3}
+              />
+            </label>
+          </div>
+
+          <div className="entry-confirm-right">
+            <div className="entry-map-wrapper">
+              <div className="entry-map-title">
+                <span>🗺️ Mapa de tu ubicación</span>
+                {location && (
+                  <span className="entry-coords">
+                    {location.latitude.toFixed(5)}, {location.longitude.toFixed(5)}
+                  </span>
+                )}
+              </div>
+              {location ? (
+                <AttendanceLocationMap
+                  location={location}
+                  locationPoints={points}
+                  radiusMeters={radiusMeters}
+                  height={280}
+                />
+              ) : (
+                <div className="entry-no-map">No se pudo cargar la vista del mapa sin GPS.</div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <footer className="entry-confirm-actions">
+          <button
+            type="button"
+            className="entry-btn-cancel"
+            onClick={onCancel}
+            disabled={loading}
+          >
+            ✕ Cancelar
+          </button>
+          <button
+            type="button"
+            className="entry-btn-confirm"
+            onClick={onConfirm}
+            disabled={loading}
+          >
+            {loading ? 'Guardando marcación...' : '✓ Confirmar y Registrar Entrada'}
+          </button>
+        </footer>
+      </section>
     </div>
   );
 }
@@ -994,6 +1216,7 @@ function CameraModal({
   onConfirm,
   onObservationChange,
   title,
+  confirmButtonText = 'Guardar registro',
 }: {
   onCancel: () => void;
   observation: string;
@@ -1001,6 +1224,7 @@ function CameraModal({
   onConfirm: (photoDataUrl: string) => void;
   onObservationChange: (value: string) => void;
   title: string;
+  confirmButtonText?: string;
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -1071,7 +1295,7 @@ function CameraModal({
     stopCamera();
     setCapturedPhoto(compressedPhoto);
     setIsReady(false);
-    setStatus('Foto capturada. Revisa antes de guardar.');
+    setStatus('Foto capturada. Revisa antes de continuar.');
   }
 
   function retakePhoto() {
@@ -1117,7 +1341,7 @@ function CameraModal({
                 Tomar nueva foto
               </button>
               <button className="capture-button" onClick={() => onConfirm(capturedPhoto)}>
-                Guardar registro
+                {confirmButtonText}
               </button>
             </>
           ) : (
@@ -1575,6 +1799,28 @@ function metersToPixels(meters: number, latitude: number, zoom: number) {
   return meters / metersPerPixel;
 }
 
+function toRadians(value: number) {
+  return (value * Math.PI) / 180;
+}
+
+function calculateDistanceMeters(origin: GeoPoint, destination: { latitude: number; longitude: number }) {
+  const earthRadiusMeters = 6371000;
+  const originLat = toRadians(origin.latitude);
+  const destinationLat = toRadians(destination.latitude);
+  const deltaLat = toRadians(destination.latitude - origin.latitude);
+  const deltaLng = toRadians(destination.longitude - origin.longitude);
+
+  const a =
+    Math.sin(deltaLat / 2) * Math.sin(deltaLat / 2) +
+    Math.cos(originLat) *
+      Math.cos(destinationLat) *
+      Math.sin(deltaLng / 2) *
+      Math.sin(deltaLng / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+  return earthRadiusMeters * c;
+}
+
 function LocationControlEditor({
   enabled,
   onEnabledChange,
@@ -1591,7 +1837,7 @@ function LocationControlEditor({
   radiusMeters: string;
 }) {
   const mapRef = useRef<HTMLDivElement | null>(null);
-  const [mapSize, setMapSize] = useState({ width: 0, height: 260 });
+  const [mapSize, setMapSize] = useState({ width: 0, height: 520 });
   const [mapZoom, setMapZoom] = useState(LOCATION_DEFAULT_ZOOM);
   const [mapCenter, setMapCenter] = useState(() => ({
     latitude: points[0]?.latitude ?? -16.5,
@@ -2742,13 +2988,15 @@ function AttendanceLocationMap({
   location,
   locationPoints,
   radiusMeters,
+  height = 200,
 }: {
   location: GeoPoint;
   locationPoints?: LocationPoint[];
   radiusMeters?: number;
+  height?: number;
 }) {
   const mapRef = useRef<HTMLDivElement | null>(null);
-  const [mapSize, setMapSize] = useState({ width: 0, height: 200 });
+  const [mapSize, setMapSize] = useState({ width: 0, height });
   const [mapZoom, setMapZoom] = useState(LOCATION_DEFAULT_ZOOM);
   const [mapCenter, setMapCenter] = useState({ latitude: location.latitude, longitude: location.longitude });
   const [dragStart, setDragStart] = useState<{ center: { latitude: number; longitude: number }; x: number; y: number } | null>(null);
@@ -2834,7 +3082,7 @@ function AttendanceLocationMap({
     <div style={{ borderRadius: '12px', overflow: 'hidden', border: '1px solid #cbd5e1', marginTop: '8px' }}>
       <div
         ref={mapRef}
-        style={{ position: 'relative', height: '200px', overflow: 'hidden', cursor: 'grab', userSelect: 'none', background: '#e8f4f8' }}
+        style={{ position: 'relative', height: `${height}px`, overflow: 'hidden', cursor: 'grab', userSelect: 'none', background: '#e8f4f8' }}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={() => setDragStart(null)}
