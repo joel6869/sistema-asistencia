@@ -1,5 +1,10 @@
 import { FormEvent, MouseEvent, SyntheticEvent, useEffect, useMemo, useRef, useState } from 'react';
 import './styles.css';
+import {
+  exportAllEmployeesExcel,
+  exportPlanillasPdf,
+  exportSingleEmployeeExcel,
+} from './lib/planillaExporter';
 
 const API_URL = import.meta.env.VITE_API_URL ?? '/api';
 const ASSET_URL = API_URL.startsWith('http') ? API_URL.replace(/\/api$/, '') : '';
@@ -2415,20 +2420,77 @@ function ReportsPanel({
     );
   }
 
+  const selectedEmployee = employeeId ? employees.find((e) => e.id === employeeId) : null;
+  const [exporting, setExporting] = useState(false);
+
+  async function handleExportExcel() {
+    try {
+      setExporting(true);
+      if (selectedEmployee) {
+        await exportSingleEmployeeExcel(selectedEmployee, month, attendances, holidays);
+      } else {
+        await exportAllEmployeesExcel(employees, month, attendances, holidays);
+      }
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  function handleExportPdf() {
+    if (selectedEmployee) {
+      exportPlanillasPdf([selectedEmployee], month, attendances, holidays);
+    } else {
+      exportPlanillasPdf(employees, month, attendances, holidays);
+    }
+  }
+
   return (
     <div className="reports-stack">
       <section className="data-panel report-export-panel">
         <div className="report-header">
           <div>
-            <h3>Exportar asistencia</h3>
-            <p>{rows.length} registros listos para exportar.</p>
+            <h3>Planillas Oficiales de Asistencia</h3>
+            <p style={{ margin: '4px 0 0', color: '#64748b', fontSize: '13px' }}>
+              Formato institucional con logos del Ministerio/OAP, días laborales, feriados y firmas de encuestador, coordinador y responsable de precios.
+            </p>
           </div>
           <div className="report-actions">
-            <button type="button" onClick={() => exportAttendanceExcel(rows, columns, month)}>
-              Exportar Excel
+            <button
+              type="button"
+              disabled={exporting}
+              onClick={handleExportExcel}
+              style={{
+                background: 'linear-gradient(135deg, #15803d 0%, #16a34a 100%)',
+                color: '#fff',
+                border: 'none',
+                padding: '10px 18px',
+                borderRadius: '12px',
+                fontWeight: '800',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+              }}
+            >
+              📊 {exporting ? 'Generando Excel...' : selectedEmployee ? 'Planilla Excel (.xlsx)' : 'Todas en Excel (.xlsx)'}
             </button>
-            <button type="button" onClick={() => exportAttendancePdf(rows, columns, month)}>
-              Exportar PDF
+            <button
+              type="button"
+              onClick={handleExportPdf}
+              style={{
+                background: 'linear-gradient(135deg, #0284c7 0%, #0369a1 100%)',
+                color: '#fff',
+                border: 'none',
+                padding: '10px 18px',
+                borderRadius: '12px',
+                fontWeight: '800',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+              }}
+            >
+              📄 {selectedEmployee ? 'Planilla PDF (Carta)' : 'Todas en PDF (Carta)'}
             </button>
           </div>
         </div>
@@ -2849,6 +2911,56 @@ function AttendanceHistory({
           <span><i className="legend-holiday" /> Feriados</span>
           <span><i className="legend-proof" /> Presento justificativo</span>
         </div>
+        {employee && (
+          <div style={{ marginTop: '16px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <button
+              type="button"
+              style={{
+                fontSize: '12px',
+                padding: '9px 12px',
+                borderRadius: '10px',
+                border: 'none',
+                background: 'linear-gradient(135deg, #15803d 0%, #16a34a 100%)',
+                color: '#ffffff',
+                fontWeight: '800',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '6px',
+              }}
+              onClick={() => {
+                const monthKey = `${visibleMonth.getFullYear()}-${String(visibleMonth.getMonth() + 1).padStart(2, '0')}`;
+                exportSingleEmployeeExcel(employee as Employee, monthKey, attendances, holidays);
+              }}
+            >
+              📊 Descargar Excel (.xlsx)
+            </button>
+            <button
+              type="button"
+              style={{
+                fontSize: '12px',
+                padding: '9px 12px',
+                borderRadius: '10px',
+                border: '1.5px solid #cbd5e1',
+                background: '#ffffff',
+                color: '#0f172a',
+                fontWeight: '800',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '6px',
+              }}
+              onClick={() => {
+                const monthKey = `${visibleMonth.getFullYear()}-${String(visibleMonth.getMonth() + 1).padStart(2, '0')}`;
+                exportPlanillasPdf([employee as Employee], monthKey, attendances, holidays);
+              }}
+            >
+              📄 Descargar PDF (Carta)
+            </button>
+          </div>
+        )}
       </aside>
 
       <section className="calendar-main">
