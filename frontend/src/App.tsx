@@ -3056,7 +3056,7 @@ function AttendanceLocationMap({
   location,
   locationPoints,
   radiusMeters,
-  height = 200,
+  height = 240,
 }: {
   location: GeoPoint;
   locationPoints?: LocationPoint[];
@@ -3068,6 +3068,8 @@ function AttendanceLocationMap({
   const [mapZoom, setMapZoom] = useState(LOCATION_DEFAULT_ZOOM);
   const [mapCenter, setMapCenter] = useState({ latitude: location.latitude, longitude: location.longitude });
   const [dragStart, setDragStart] = useState<{ center: { latitude: number; longitude: number }; x: number; y: number } | null>(null);
+  const [touchPinchDist, setTouchPinchDist] = useState<number | null>(null);
+  const [isExpanded, setIsExpanded] = useState(false);
   const dragMovedRef = useRef(false);
   const points = locationPoints ?? [];
   const radius = radiusMeters ?? 800;
@@ -3083,7 +3085,7 @@ function AttendanceLocationMap({
     const observer = new ResizeObserver(updateSize);
     observer.observe(mapRef.current);
     return () => observer.disconnect();
-  }, []);
+  }, [isExpanded]);
 
   const centerWorld = locationToWorld(mapCenter.latitude, mapCenter.longitude, mapZoom);
   const mapStart = { x: centerWorld.x - mapSize.width / 2, y: centerWorld.y - mapSize.height / 2 };
@@ -3107,9 +3109,14 @@ function AttendanceLocationMap({
   }, [mapSize.width, mapSize.height, mapStart.x, mapStart.y, mapZoom]);
 
   function zoomMap(nextZoom: number) {
-    const clampedZoom = Math.min(LOCATION_MAX_ZOOM, Math.max(LOCATION_MIN_ZOOM, nextZoom));
+    const clampedZoom = Math.min(19, Math.max(LOCATION_MIN_ZOOM, nextZoom));
     if (clampedZoom === mapZoom) return;
     setMapZoom(clampedZoom);
+  }
+
+  function recenterMap() {
+    setMapCenter({ latitude: location.latitude, longitude: location.longitude });
+    setMapZoom(17);
   }
 
   function handleMouseDown(event: MouseEvent<HTMLDivElement>) {
@@ -3126,6 +3133,40 @@ function AttendanceLocationMap({
     const startWorld = locationToWorld(dragStart.center.latitude, dragStart.center.longitude, mapZoom);
     const nextWorld = { x: startWorld.x - (event.clientX - dragStart.x), y: startWorld.y - (event.clientY - dragStart.y) };
     setMapCenter(worldToLocation(nextWorld.x, nextWorld.y, mapZoom));
+  }
+
+  function handleTouchStart(event: React.TouchEvent<HTMLDivElement>) {
+    if (event.touches.length === 1) {
+      const touch = event.touches[0];
+      setDragStart({ center: { ...mapCenter }, x: touch.clientX, y: touch.clientY });
+      setTouchPinchDist(null);
+    } else if (event.touches.length === 2) {
+      const dx = event.touches[0].clientX - event.touches[1].clientX;
+      const dy = event.touches[0].clientY - event.touches[1].clientY;
+      setTouchPinchDist(Math.hypot(dx, dy));
+      setDragStart(null);
+    }
+  }
+
+  function handleTouchMove(event: React.TouchEvent<HTMLDivElement>) {
+    if (event.touches.length === 1 && dragStart) {
+      const touch = event.touches[0];
+      const startWorld = locationToWorld(dragStart.center.latitude, dragStart.center.longitude, mapZoom);
+      const nextWorld = { x: startWorld.x - (touch.clientX - dragStart.x), y: startWorld.y - (touch.clientY - dragStart.y) };
+      setMapCenter(worldToLocation(nextWorld.x, nextWorld.y, mapZoom));
+    } else if (event.touches.length === 2 && touchPinchDist !== null) {
+      const dx = event.touches[0].clientX - event.touches[1].clientX;
+      const dy = event.touches[0].clientY - event.touches[1].clientY;
+      const currentDist = Math.hypot(dx, dy);
+      if (Math.abs(currentDist - touchPinchDist) > 35) {
+        if (currentDist > touchPinchDist) {
+          zoomMap(mapZoom + 1);
+        } else {
+          zoomMap(mapZoom - 1);
+        }
+        setTouchPinchDist(currentDist);
+      }
+    }
   }
 
   function handleMapWheel(event: WheelEvent) {
@@ -3146,164 +3187,339 @@ function AttendanceLocationMap({
   const accuracyPixels = location.accuracy ? metersToPixels(location.accuracy, location.latitude, mapZoom) : 0;
   const googleMapsUrl = `https://www.google.com/maps?q=${location.latitude},${location.longitude}`;
 
-  return (
-    <div style={{ borderRadius: '12px', overflow: 'hidden', border: '1px solid #cbd5e1', marginTop: '8px' }}>
+  const renderMapBody = (currentHeight: number) => (
+    <div
+      ref={mapRef}
+      style={{
+        position: 'relative',
+        height: `${currentHeight}px`,
+        overflow: 'hidden',
+        cursor: 'grab',
+        userSelect: 'none',
+        background: '#e8f4f8',
+        touchAction: 'none',
+      }}
+      onMouseDown={handleMouseDown}
+      onMouseMove={handleMouseMove}
+      onMouseUp={() => setDragStart(null)}
+      onMouseLeave={() => setDragStart(null)}
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={() => {
+        setDragStart(null);
+        setTouchPinchDist(null);
+      }}
+    >
+      {mapTiles.map((tile) => (
+        <img
+          alt=""
+          draggable={false}
+          key={tile.key}
+          src={`https://tile.openstreetmap.org/${mapZoom}/${tile.x}/${tile.y}.png`}
+          style={{ position: 'absolute', left: tile.left, top: tile.top, width: LOCATION_TILE_SIZE, height: LOCATION_TILE_SIZE }}
+        />
+      ))}
+
+      {/* Allowed location points (green circles) */}
+      {points.map((point) => {
+        const w = locationToWorld(point.latitude, point.longitude, mapZoom);
+        const l = w.x - mapStart.x;
+        const t = w.y - mapStart.y;
+        const r = metersToPixels(radius, point.latitude, mapZoom);
+        return (
+          <div key={point.id} style={{ position: 'absolute', pointerEvents: 'none' }}>
+            <span style={{ position: 'absolute', left: l - r, top: t - r, width: r * 2, height: r * 2, border: '2px solid rgba(22,163,74,0.6)', background: 'rgba(22,163,74,0.08)', borderRadius: '50%' }} />
+            <span style={{ position: 'absolute', left: l - 10, top: t - 10, width: 20, height: 20, background: '#16a34a', borderRadius: '50%', border: '2px solid #ffffff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '10px', color: '#fff', fontWeight: '800', boxShadow: '0 2px 4px rgba(0,0,0,0.3)' }} title={point.name}>✓</span>
+          </div>
+        );
+      })}
+
+      {/* Attendance location (precision radar & vector pin) */}
+      {accuracyPixels > 0 && (
+        <span
+          style={{
+            position: 'absolute',
+            left: attendanceLeft - accuracyPixels,
+            top: attendanceTop - accuracyPixels,
+            width: accuracyPixels * 2,
+            height: accuracyPixels * 2,
+            border: '2px solid rgba(220, 38, 38, 0.55)',
+            background: 'radial-gradient(circle, rgba(220, 38, 38, 0.15) 0%, rgba(220, 38, 38, 0.04) 70%, transparent 100%)',
+            borderRadius: '50%',
+            pointerEvents: 'none',
+            zIndex: 3,
+          }}
+        />
+      )}
+
+      {/* 1. Punto exacto en el suelo (Bullseye / Diana) */}
       <div
-        ref={mapRef}
-        style={{ position: 'relative', height: `${height}px`, overflow: 'hidden', cursor: 'grab', userSelect: 'none', background: '#e8f4f8' }}
-        onMouseDown={handleMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={() => setDragStart(null)}
-        onMouseLeave={() => setDragStart(null)}
+        style={{
+          position: 'absolute',
+          left: attendanceLeft,
+          top: attendanceTop,
+          transform: 'translate(-50%, -50%)',
+          pointerEvents: 'none',
+          zIndex: 6,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
       >
-        {mapTiles.map((tile) => (
-          <img
-            alt=""
-            draggable={false}
-            key={tile.key}
-            src={`https://tile.openstreetmap.org/${mapZoom}/${tile.x}/${tile.y}.png`}
-            style={{ position: 'absolute', left: tile.left, top: tile.top, width: LOCATION_TILE_SIZE, height: LOCATION_TILE_SIZE }}
-          />
-        ))}
+        <span
+          style={{
+            position: 'absolute',
+            width: '18px',
+            height: '18px',
+            borderRadius: '50%',
+            background: 'rgba(220, 38, 38, 0.3)',
+            boxShadow: '0 0 8px rgba(220, 38, 38, 0.5)',
+          }}
+        />
+        <span
+          style={{
+            position: 'relative',
+            width: '8px',
+            height: '8px',
+            borderRadius: '50%',
+            background: '#b91c1c',
+            border: '2px solid #ffffff',
+            boxShadow: '0 1px 4px rgba(0,0,0,0.6)',
+          }}
+        />
+      </div>
 
-        {/* Allowed location points (green circles) */}
-        {points.map((point) => {
-          const w = locationToWorld(point.latitude, point.longitude, mapZoom);
-          const l = w.x - mapStart.x;
-          const t = w.y - mapStart.y;
-          const r = metersToPixels(radius, point.latitude, mapZoom);
-          return (
-            <div key={point.id} style={{ position: 'absolute', pointerEvents: 'none' }}>
-              <span style={{ position: 'absolute', left: l - r, top: t - r, width: r * 2, height: r * 2, border: '2px solid rgba(22,163,74,0.6)', background: 'rgba(22,163,74,0.08)', borderRadius: '50%' }} />
-              <span style={{ position: 'absolute', left: l - 10, top: t - 10, width: 20, height: 20, background: '#16a34a', borderRadius: '50%', border: '2px solid #ffffff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '10px', color: '#fff', fontWeight: '800', boxShadow: '0 2px 4px rgba(0,0,0,0.3)' }} title={point.name}>✓</span>
-            </div>
-          );
-        })}
-
-        {/* Attendance location (precision radar & vector pin) */}
-        {accuracyPixels > 0 && (
-          <span
+      {/* 2. Pin Vectorial SVG apuntando exactamente al punto en el suelo */}
+      <div
+        style={{
+          position: 'absolute',
+          left: attendanceLeft,
+          top: attendanceTop,
+          transform: 'translate(-50%, -100%)',
+          pointerEvents: 'none',
+          zIndex: 7,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+        }}
+      >
+        {location.accuracy && (
+          <div
             style={{
-              position: 'absolute',
-              left: attendanceLeft - accuracyPixels,
-              top: attendanceTop - accuracyPixels,
-              width: accuracyPixels * 2,
-              height: accuracyPixels * 2,
-              border: '2px solid rgba(220, 38, 38, 0.55)',
-              background: 'radial-gradient(circle, rgba(220, 38, 38, 0.15) 0%, rgba(220, 38, 38, 0.04) 70%, transparent 100%)',
-              borderRadius: '50%',
-              pointerEvents: 'none',
-              zIndex: 3,
+              background: 'linear-gradient(135deg, #b91c1c 0%, #dc2626 100%)',
+              color: '#ffffff',
+              borderRadius: '999px',
+              fontSize: '10.5px',
+              fontWeight: '900',
+              padding: '2px 8px',
+              whiteSpace: 'nowrap',
+              boxShadow: '0 2px 6px rgba(0,0,0,0.35)',
+              marginBottom: '1px',
+              border: '1.5px solid rgba(255,255,255,0.9)',
+              letterSpacing: '0.2px',
             }}
-          />
+          >
+            ±{location.accuracy.toFixed(1)} m
+          </div>
         )}
 
-        {/* 1. Punto exacto en el suelo (Bullseye / Diana) */}
-        <div
-          style={{
-            position: 'absolute',
-            left: attendanceLeft,
-            top: attendanceTop,
-            transform: 'translate(-50%, -50%)',
-            pointerEvents: 'none',
-            zIndex: 6,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}
+        <svg
+          width="26"
+          height="32"
+          viewBox="0 0 28 34"
+          fill="none"
+          style={{ filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.45))', display: 'block' }}
         >
-          <span
-            style={{
-              position: 'absolute',
-              width: '18px',
-              height: '18px',
-              borderRadius: '50%',
-              background: 'rgba(220, 38, 38, 0.3)',
-              boxShadow: '0 0 8px rgba(220, 38, 38, 0.5)',
-            }}
+          <path
+            d="M14 0C6.268 0 0 6.268 0 14c0 10.5 14 20 14 20s14-9.5 14-20C28 6.268 21.732 0 14 0z"
+            fill="#dc2626"
           />
-          <span
-            style={{
-              position: 'relative',
-              width: '8px',
-              height: '8px',
-              borderRadius: '50%',
-              background: '#b91c1c',
-              border: '2px solid #ffffff',
-              boxShadow: '0 1px 4px rgba(0,0,0,0.6)',
-            }}
-          />
-        </div>
-
-        {/* 2. Pin Vectorial SVG apuntando exactamente al punto en el suelo */}
-        <div
-          style={{
-            position: 'absolute',
-            left: attendanceLeft,
-            top: attendanceTop,
-            transform: 'translate(-50%, -100%)',
-            pointerEvents: 'none',
-            zIndex: 7,
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-          }}
-        >
-          {location.accuracy && (
-            <div
-              style={{
-                background: 'linear-gradient(135deg, #b91c1c 0%, #dc2626 100%)',
-                color: '#ffffff',
-                borderRadius: '999px',
-                fontSize: '10.5px',
-                fontWeight: '900',
-                padding: '2px 8px',
-                whiteSpace: 'nowrap',
-                boxShadow: '0 2px 6px rgba(0,0,0,0.35)',
-                marginBottom: '1px',
-                border: '1.5px solid rgba(255,255,255,0.9)',
-                letterSpacing: '0.2px',
-              }}
-            >
-              ±{location.accuracy.toFixed(1)} m
-            </div>
-          )}
-
-          <svg
-            width="26"
-            height="32"
-            viewBox="0 0 28 34"
-            fill="none"
-            style={{ filter: 'drop-shadow(0 2px 4px rgba(0,0,0,0.45))', display: 'block' }}
-          >
-            <path
-              d="M14 0C6.268 0 0 6.268 0 14c0 10.5 14 20 14 20s14-9.5 14-20C28 6.268 21.732 0 14 0z"
-              fill="#dc2626"
-            />
-            <circle cx="14" cy="13" r="5.5" fill="#ffffff" />
-            <circle cx="14" cy="13" r="3" fill="#991b1b" />
-          </svg>
-        </div>
-
-        {/* Zoom controls */}
-        <div style={{ position: 'absolute', top: '8px', right: '8px', display: 'flex', flexDirection: 'column', gap: '2px', zIndex: 10 }} onClick={(e) => e.stopPropagation()}>
-          <button type="button" style={{ width: '28px', height: '28px', background: '#fff', border: '1px solid #cbd5e1', borderRadius: '6px', fontWeight: '800', cursor: 'pointer', fontSize: '16px', lineHeight: 1 }} onClick={() => zoomMap(mapZoom + 1)}>+</button>
-          <button type="button" style={{ width: '28px', height: '28px', background: '#fff', border: '1px solid #cbd5e1', borderRadius: '6px', fontWeight: '800', cursor: 'pointer', fontSize: '16px', lineHeight: 1 }} onClick={() => zoomMap(mapZoom - 1)}>−</button>
-        </div>
-
-        {/* OpenStreetMap attribution */}
-        <div style={{ position: 'absolute', bottom: '2px', right: '4px', fontSize: '9px', color: '#555', background: 'rgba(255,255,255,0.75)', padding: '1px 4px', borderRadius: '3px', zIndex: 10 }}>
-          © OpenStreetMap
-        </div>
+          <circle cx="14" cy="13" r="5.5" fill="#ffffff" />
+          <circle cx="14" cy="13" r="3" fill="#991b1b" />
+        </svg>
       </div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', background: '#f8fafc', borderTop: '1px solid #e2e8f0', fontSize: '12px' }}>
-        <span style={{ color: '#475569', fontWeight: '700' }}>
-          {location.latitude.toFixed(6)}, {location.longitude.toFixed(6)}
-          {location.accuracy ? ` · Precisión GPS: ±${location.accuracy.toFixed(1)} m` : ''}
-        </span>
-        <a href={googleMapsUrl} target="_blank" rel="noreferrer" style={{ color: '#2563eb', fontWeight: '800', textDecoration: 'none', fontSize: '12px' }}>Abrir en Google Maps ↗</a>
+
+      {/* Floating control buttons (Zoom, Recenter, Fullscreen) */}
+      <div
+        style={{
+          position: 'absolute',
+          top: '10px',
+          right: '10px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '4px',
+          zIndex: 10,
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button
+          type="button"
+          title="Acercar mapa (Zoom In)"
+          style={{
+            width: '32px',
+            height: '32px',
+            background: '#ffffff',
+            border: '1.5px solid #cbd5e1',
+            borderRadius: '8px',
+            fontWeight: '900',
+            cursor: 'pointer',
+            fontSize: '18px',
+            lineHeight: 1,
+            boxShadow: '0 2px 6px rgba(0,0,0,0.15)',
+            display: 'grid',
+            placeItems: 'center',
+          }}
+          onClick={() => zoomMap(mapZoom + 1)}
+        >
+          +
+        </button>
+        <button
+          type="button"
+          title="Alejar mapa (Zoom Out)"
+          style={{
+            width: '32px',
+            height: '32px',
+            background: '#ffffff',
+            border: '1.5px solid #cbd5e1',
+            borderRadius: '8px',
+            fontWeight: '900',
+            cursor: 'pointer',
+            fontSize: '18px',
+            lineHeight: 1,
+            boxShadow: '0 2px 6px rgba(0,0,0,0.15)',
+            display: 'grid',
+            placeItems: 'center',
+          }}
+          onClick={() => zoomMap(mapZoom - 1)}
+        >
+          −
+        </button>
+        <button
+          type="button"
+          title="Centrar en mi ubicación"
+          style={{
+            width: '32px',
+            height: '32px',
+            background: '#ffffff',
+            border: '1.5px solid #cbd5e1',
+            borderRadius: '8px',
+            cursor: 'pointer',
+            fontSize: '14px',
+            boxShadow: '0 2px 6px rgba(0,0,0,0.15)',
+            display: 'grid',
+            placeItems: 'center',
+          }}
+          onClick={recenterMap}
+        >
+          🎯
+        </button>
+      </div>
+
+      {/* OpenStreetMap attribution */}
+      <div style={{ position: 'absolute', bottom: '3px', right: '4px', fontSize: '9px', color: '#555', background: 'rgba(255,255,255,0.75)', padding: '1px 4px', borderRadius: '3px', zIndex: 10 }}>
+        © OpenStreetMap
       </div>
     </div>
+  );
+
+  return (
+    <>
+      <div style={{ borderRadius: '12px', overflow: 'hidden', border: '1px solid #cbd5e1', marginTop: '8px' }}>
+        {renderMapBody(height)}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '6px', padding: '8px 12px', background: '#f8fafc', borderTop: '1px solid #e2e8f0', fontSize: '12px' }}>
+          <span style={{ color: '#475569', fontWeight: '700' }}>
+            {location.latitude.toFixed(6)}, {location.longitude.toFixed(6)}
+            {location.accuracy ? ` · Precisión GPS: ±${location.accuracy.toFixed(1)} m` : ''}
+          </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <button
+              type="button"
+              style={{
+                background: 'none',
+                border: 'none',
+                color: '#0f766e',
+                fontWeight: '800',
+                cursor: 'pointer',
+                fontSize: '12px',
+                padding: 0,
+                display: 'flex',
+                alignItems: 'center',
+                gap: '3px',
+              }}
+              onClick={() => setIsExpanded(true)}
+            >
+              <span>🔍</span> Ampliar mapa
+            </button>
+            <a href={googleMapsUrl} target="_blank" rel="noreferrer" style={{ color: '#2563eb', fontWeight: '800', textDecoration: 'none', fontSize: '12px' }}>
+              Abrir en Google Maps ↗
+            </a>
+          </div>
+        </div>
+      </div>
+
+      {/* Modal grande de mapa interactivo */}
+      {isExpanded && (
+        <div className="camera-backdrop" style={{ zIndex: 40 }} onClick={() => setIsExpanded(false)}>
+          <div
+            style={{
+              width: 'min(92vw, 880px)',
+              background: '#ffffff',
+              borderRadius: '16px',
+              padding: '16px',
+              boxShadow: '0 20px 60px rgba(0,0,0,0.35)',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '10px',
+              margin: 'auto',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <strong style={{ fontSize: '15px', color: '#0f172a' }}>🗺️ Explorador de Ubicación Interactivo</strong>
+              <button
+                type="button"
+                style={{
+                  background: '#f1f5f9',
+                  border: '1px solid #cbd5e1',
+                  borderRadius: '8px',
+                  width: '32px',
+                  height: '32px',
+                  fontWeight: '800',
+                  cursor: 'pointer',
+                }}
+                onClick={() => setIsExpanded(false)}
+              >
+                ✕
+              </button>
+            </div>
+            <p style={{ margin: 0, fontSize: '12.5px', color: '#64748b' }}>
+              Usa los botones <strong>+</strong> / <strong>−</strong>, la rueda del ratón o pellizca en pantalla táctil para hacer zoom detallado hasta el nivel de calle.
+            </p>
+            <div style={{ borderRadius: '12px', overflow: 'hidden', border: '1px solid #cbd5e1' }}>
+              {renderMapBody(420)}
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '12.5px', color: '#475569', fontWeight: '700' }}>
+              <span>Coordenadas: {location.latitude.toFixed(6)}, {location.longitude.toFixed(6)} (±{location.accuracy?.toFixed(1)} m)</span>
+              <button
+                type="button"
+                style={{
+                  padding: '7px 16px',
+                  borderRadius: '8px',
+                  border: 'none',
+                  background: '#0f766e',
+                  color: '#fff',
+                  fontWeight: '800',
+                  cursor: 'pointer',
+                }}
+                onClick={() => setIsExpanded(false)}
+              >
+                Listo / Volver
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
