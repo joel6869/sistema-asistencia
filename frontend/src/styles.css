@@ -1850,11 +1850,6 @@ th {
   --event-color: #ffffff;
 }
 
-.event-location-split {
-  background: linear-gradient(90deg, #f43f5e 0 50%, #06b6d4 50% 100%);
-  color: #ffffff;
-}
-
 .event-holiday {
   --event-bg: #d97706;
   --event-color: #ffffff;
@@ -1863,6 +1858,32 @@ th {
 .event-proof {
   --event-bg: #3b82f6;
   --event-color: #ffffff;
+}
+
+/* Division dinamica segun el estado base del marcado */
+.event-location-split {
+  background: linear-gradient(90deg, var(--event-bg, #10b981) 0 50%, #06b6d4 50% 100%);
+  color: #ffffff;
+}
+
+.event-ok.event-location-split {
+  background: linear-gradient(90deg, #10b981 0 50%, #06b6d4 50% 100%);
+  color: #ffffff;
+}
+
+.event-late.event-location-split {
+  background: linear-gradient(90deg, #f97316 0 50%, #06b6d4 50% 100%);
+  color: #ffffff;
+}
+
+.event-missing.event-location-split {
+  background: linear-gradient(90deg, #f43f5e 0 50%, #06b6d4 50% 100%);
+  color: #ffffff;
+}
+
+.event-proof.event-location-split {
+  background: linear-gradient(90deg, #3b82f6 0 50%, #06b6d4 50% 100%);
+  color: #ffffff;
 }
 
 .empty-day {
