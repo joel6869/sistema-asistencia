@@ -2403,7 +2403,14 @@ function ReportsPanel({
   const defaultExportMonth = availableMonths[0] ?? currentMonth;
   const [employeeId, setEmployeeId] = useState('');
   const [month, setMonth] = useState(defaultExportMonth);
-  const [columns, setColumns] = useState<ExportColumnKey[]>(['date', 'employee', 'position', 'entryTime', 'exitTime']);
+  const [columns, setColumns] = useState<ExportColumnKey[]>([
+    'date',
+    'employee',
+    'position',
+    'entryTime',
+    'exitTime',
+    'status',
+  ]);
   const [previewOpen, setPreviewOpen] = useState(false);
   const rows = getExportRows(attendances, employees, holidays, employeeId, month);
   const selectedColumns = EXPORT_COLUMNS.filter((column) => columns.includes(column.key));
@@ -2427,9 +2434,9 @@ function ReportsPanel({
     try {
       setExporting(true);
       if (selectedEmployee) {
-        await exportSingleEmployeeExcel(selectedEmployee, month, attendances, holidays);
+        await exportSingleEmployeeExcel(selectedEmployee, month, attendances, holidays, columns);
       } else {
-        await exportAllEmployeesExcel(employees, month, attendances, holidays);
+        await exportAllEmployeesExcel(employees, month, attendances, holidays, columns);
       }
     } finally {
       setExporting(false);
@@ -2438,9 +2445,9 @@ function ReportsPanel({
 
   function handleExportPdf() {
     if (selectedEmployee) {
-      exportPlanillasPdf([selectedEmployee], month, attendances, holidays);
+      exportPlanillasPdf([selectedEmployee], month, attendances, holidays, columns);
     } else {
-      exportPlanillasPdf(employees, month, attendances, holidays);
+      exportPlanillasPdf(employees, month, attendances, holidays, columns);
     }
   }
 
@@ -2911,56 +2918,6 @@ function AttendanceHistory({
           <span><i className="legend-holiday" /> Feriados</span>
           <span><i className="legend-proof" /> Presento justificativo</span>
         </div>
-        {employee && (
-          <div style={{ marginTop: '16px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            <button
-              type="button"
-              style={{
-                fontSize: '12px',
-                padding: '9px 12px',
-                borderRadius: '10px',
-                border: 'none',
-                background: 'linear-gradient(135deg, #15803d 0%, #16a34a 100%)',
-                color: '#ffffff',
-                fontWeight: '800',
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: '6px',
-              }}
-              onClick={() => {
-                const monthKey = `${visibleMonth.getFullYear()}-${String(visibleMonth.getMonth() + 1).padStart(2, '0')}`;
-                exportSingleEmployeeExcel(employee as Employee, monthKey, attendances, holidays);
-              }}
-            >
-              📊 Descargar Excel (.xlsx)
-            </button>
-            <button
-              type="button"
-              style={{
-                fontSize: '12px',
-                padding: '9px 12px',
-                borderRadius: '10px',
-                border: '1.5px solid #cbd5e1',
-                background: '#ffffff',
-                color: '#0f172a',
-                fontWeight: '800',
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: '6px',
-              }}
-              onClick={() => {
-                const monthKey = `${visibleMonth.getFullYear()}-${String(visibleMonth.getMonth() + 1).padStart(2, '0')}`;
-                exportPlanillasPdf([employee as Employee], monthKey, attendances, holidays);
-              }}
-            >
-              📄 Descargar PDF (Carta)
-            </button>
-          </div>
-        )}
       </aside>
 
       <section className="calendar-main">

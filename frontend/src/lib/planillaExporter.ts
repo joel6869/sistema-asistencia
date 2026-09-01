@@ -1,6 +1,31 @@
 import ExcelJS from 'exceljs';
 import { LOGO_MINISTERIO_BASE64, LOGO_MINISTERIO_DATA_URL, LOGO_OAP_BASE64, LOGO_OAP_DATA_URL } from './logosBase64';
 
+export type ExportColumnKey =
+  | 'date'
+  | 'employee'
+  | 'position'
+  | 'entryTime'
+  | 'exitTime'
+  | 'status'
+  | 'lateMinutes'
+  | 'entryObservation'
+  | 'exitObservation'
+  | 'notes';
+
+export const AVAILABLE_COLUMNS: Record<ExportColumnKey, { label: string; width: number; pdfWidthPercent?: number }> = {
+  date: { label: 'Fecha', width: 22, pdfWidthPercent: 12 },
+  employee: { label: 'Nombre completo', width: 44, pdfWidthPercent: 22 },
+  position: { label: 'Cargo', width: 30, pdfWidthPercent: 18 },
+  entryTime: { label: 'Hora entrada', width: 26, pdfWidthPercent: 14 },
+  exitTime: { label: 'Hora salida', width: 26, pdfWidthPercent: 14 },
+  status: { label: 'Estado', width: 24, pdfWidthPercent: 12 },
+  lateMinutes: { label: 'Retraso', width: 20, pdfWidthPercent: 10 },
+  entryObservation: { label: 'Obs. entrada', width: 30, pdfWidthPercent: 16 },
+  exitObservation: { label: 'Obs. salida', width: 30, pdfWidthPercent: 16 },
+  notes: { label: 'Obs. interna', width: 30, pdfWidthPercent: 16 },
+};
+
 export interface GeoPoint {
   latitude: number;
   longitude: number;
@@ -54,14 +79,19 @@ export interface Holiday {
 }
 
 export interface DayRecord {
-  dateStr: string; // YYYY-MM-DD
-  dayNumber: number;
-  dayName: string;
-  employeeName: string;
-  cargo: string;
+  date: string;
+  employee: string;
+  position: string;
   entryTime: string;
   exitTime: string;
   status: string;
+  lateMinutes: string;
+  entryObservation: string;
+  exitObservation: string;
+  notes: string;
+  dateStr: string;
+  dayNumber: number;
+  dayName: string;
   isHoliday: boolean;
   holidayName?: string;
 }
@@ -206,6 +236,10 @@ export function buildEmployeeMonthDays(
     let entryTime = '';
     let exitTime = '';
     let status = '';
+    let lateMinutes = '-';
+    let entryObservation = '-';
+    let exitObservation = '-';
+    let notes = '-';
     const isHoliday = Boolean(holiday);
 
     if (isHoliday) {
@@ -216,6 +250,10 @@ export function buildEmployeeMonthDays(
       entryTime = att.entryTime ? formatTimeToInstitutional(att.entryTime) : 'Pendiente';
       exitTime = att.exitTime ? formatTimeToInstitutional(att.exitTime) : 'Pendiente';
       status = statusToInstitutional(att.status);
+      lateMinutes = att.lateMinutes ? `${att.lateMinutes} min` : '0 min';
+      entryObservation = att.entryObservation || '-';
+      exitObservation = att.exitObservation || '-';
+      notes = att.notes || '-';
     } else {
       entryTime = 'Pendiente';
       exitTime = 'Pendiente';
@@ -223,14 +261,19 @@ export function buildEmployeeMonthDays(
     }
 
     records.push({
-      dateStr,
-      dayNumber: day,
-      dayName: new Intl.DateTimeFormat('es-BO', { weekday: 'short' }).format(dateObj),
-      employeeName: employee.fullName,
-      cargo: employee.position,
+      date: dateStr,
+      employee: employee.fullName,
+      position: employee.position,
       entryTime,
       exitTime,
       status,
+      lateMinutes,
+      entryObservation,
+      exitObservation,
+      notes,
+      dateStr,
+      dayNumber: day,
+      dayName: new Intl.DateTimeFormat('es-BO', { weekday: 'short' }).format(dateObj),
       isHoliday,
       holidayName: holiday?.name,
     });
@@ -239,11 +282,23 @@ export function buildEmployeeMonthDays(
   return records;
 }
 
+function getColLetter(colIdx1Based: number): string {
+  let temp = '';
+  let n = colIdx1Based;
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    temp = String.fromCharCode(65 + rem) + temp;
+    n = Math.floor((n - 1) / 26);
+  }
+  return temp;
+}
+
 export async function exportSingleEmployeeExcel(
   employee: Employee,
   monthStr: string,
   attendances: Attendance[],
   holidays: Holiday[],
+  columns: ExportColumnKey[] = ['date', 'employee', 'position', 'entryTime', 'exitTime', 'status'],
 ) {
   const workbook = new ExcelJS.Workbook();
   workbook.creator = 'Observatorio Agroambiental y Productivo';
@@ -253,7 +308,7 @@ export async function exportSingleEmployeeExcel(
   const monthName = getMonthName(monthStr);
   const records = buildEmployeeMonthDays(employee, monthStr, attendances, holidays);
 
-  addEmployeePlanillaSheet(workbook, employee, monthStr, monthName, yearStr, records);
+  addEmployeePlanillaSheet(workbook, employee, monthStr, monthName, yearStr, records, columns);
 
   const buffer = await workbook.xlsx.writeBuffer();
   const blob = new Blob([buffer], {
@@ -271,6 +326,7 @@ export async function exportAllEmployeesExcel(
   monthStr: string,
   attendances: Attendance[],
   holidays: Holiday[],
+  columns: ExportColumnKey[] = ['date', 'employee', 'position', 'entryTime', 'exitTime', 'status'],
 ) {
   const workbook = new ExcelJS.Workbook();
   workbook.creator = 'Observatorio Agroambiental y Productivo';
@@ -281,7 +337,7 @@ export async function exportAllEmployeesExcel(
 
   employees.forEach((employee) => {
     const records = buildEmployeeMonthDays(employee, monthStr, attendances, holidays);
-    addEmployeePlanillaSheet(workbook, employee, monthStr, monthName, yearStr, records);
+    addEmployeePlanillaSheet(workbook, employee, monthStr, monthName, yearStr, records, columns);
   });
 
   const buffer = await workbook.xlsx.writeBuffer();
@@ -302,7 +358,12 @@ function addEmployeePlanillaSheet(
   monthName: string,
   yearStr: string,
   records: DayRecord[],
+  columns: ExportColumnKey[] = ['date', 'employee', 'position', 'entryTime', 'exitTime', 'status'],
 ) {
+  const activeColumns = columns.length > 0 ? columns : (['date', 'employee', 'position', 'entryTime', 'exitTime', 'status'] as ExportColumnKey[]);
+  const numCols = activeColumns.length;
+  const lastColLetter = getColLetter(numCols);
+
   // Worksheet name max 31 chars
   const cleanSheetName = (employee.fullName || 'Planilla')
     .slice(0, 31)
@@ -325,15 +386,11 @@ function addEmployeePlanillaSheet(
     },
   });
 
-  // Column widths matching institutional format
-  ws.columns = [
-    { key: 'fecha', width: 28 },
-    { key: 'nombre', width: 48 },
-    { key: 'cargo', width: 34 },
-    { key: 'entrada', width: 30 },
-    { key: 'salida', width: 30 },
-    { key: 'estado', width: 28 },
-  ];
+  // Dynamic Column widths matching selected columns
+  ws.columns = activeColumns.map((colKey) => ({
+    key: colKey,
+    width: AVAILABLE_COLUMNS[colKey]?.width ?? 25,
+  }));
 
   // Insert Images
   try {
@@ -352,7 +409,7 @@ function addEmployeePlanillaSheet(
       extension: 'png',
     });
     ws.addImage(imgOapId, {
-      tl: { col: 4.3, row: 0.2 },
+      tl: { col: Math.max(1, numCols - 1.8), row: 0.2 },
       ext: { width: 220, height: 75 },
       editAs: 'oneCell',
     });
@@ -363,22 +420,22 @@ function addEmployeePlanillaSheet(
   // Row 1: empty height for logo space
   ws.getRow(1).height = 42;
 
-  // Title rows
-  ws.mergeCells('A2:F2');
+  // Title rows merged dynamically from A to lastColLetter
+  ws.mergeCells(`A2:${lastColLetter}2`);
   const r2 = ws.getCell('A2');
   r2.value = 'Ministerio De Producción Sostenible, Medio Ambiente y Agua';
   r2.font = { name: 'Arial', size: 12, bold: true, color: { argb: 'FF000000' } };
   r2.alignment = { horizontal: 'center', vertical: 'middle' };
   ws.getRow(2).height = 18;
 
-  ws.mergeCells('A3:F3');
+  ws.mergeCells(`A3:${lastColLetter}3`);
   const r3 = ws.getCell('A3');
   r3.value = 'Observatorio Agroambiental Productivo';
   r3.font = { name: 'Arial', size: 12, bold: true, color: { argb: 'FF000000' } };
   r3.alignment = { horizontal: 'center', vertical: 'middle' };
   ws.getRow(3).height = 18;
 
-  ws.mergeCells('A4:F4');
+  ws.mergeCells(`A4:${lastColLetter}4`);
   const r4 = ws.getCell('A4');
   r4.value = `Planilla de asistencia del mes de ${monthName.toLowerCase()} de ${yearStr}`;
   r4.font = { name: 'Arial', size: 12, bold: true, color: { argb: 'FF000000' } };
@@ -388,9 +445,9 @@ function addEmployeePlanillaSheet(
   // Empty row 5
   ws.getRow(5).height = 10;
 
-  // Header row 6
+  // Header row 6 (Dynamic column labels)
   const headerRow = ws.getRow(6);
-  headerRow.values = ['Fecha', 'Nombre completo', 'Cargo', 'Hora entrada', 'Hora salida', 'Estado'];
+  headerRow.values = activeColumns.map((colKey) => AVAILABLE_COLUMNS[colKey]?.label ?? colKey);
   headerRow.height = 30;
   headerRow.eachCell((cell) => {
     cell.font = { name: 'Arial', size: 12, bold: true, color: { argb: 'FF000000' } };
@@ -409,20 +466,16 @@ function addEmployeePlanillaSheet(
     const row = ws.getRow(currentRowIdx);
     row.height = 24.95;
 
-    // Excel Date
-    const dateCell = row.getCell(1);
-    const [y, m, d] = rec.dateStr.split('-').map(Number);
-    dateCell.value = new Date(y, m - 1, d);
-    dateCell.numFmt = 'dd/mm/yyyy';
+    activeColumns.forEach((colKey, colIdx) => {
+      const cell = row.getCell(colIdx + 1);
+      if (colKey === 'date') {
+        const [y, m, d] = rec.dateStr.split('-').map(Number);
+        cell.value = new Date(y, m - 1, d);
+        cell.numFmt = 'dd/mm/yyyy';
+      } else {
+        cell.value = rec[colKey as keyof DayRecord] ?? '-';
+      }
 
-    row.getCell(2).value = rec.employeeName;
-    row.getCell(3).value = rec.cargo;
-    row.getCell(4).value = rec.entryTime;
-    row.getCell(5).value = rec.exitTime;
-    row.getCell(6).value = rec.status;
-
-    for (let c = 1; c <= 6; c++) {
-      const cell = row.getCell(c);
       cell.font = { name: 'Arial', size: 10, bold: false, color: { argb: 'FF000000' } };
       cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
       cell.border = {
@@ -431,7 +484,7 @@ function addEmployeePlanillaSheet(
         bottom: { style: 'medium', color: { argb: 'FF000000' } },
         right: { style: 'medium', color: { argb: 'FF000000' } },
       };
-    }
+    });
 
     currentRowIdx++;
   });
@@ -449,28 +502,42 @@ function addEmployeePlanillaSheet(
   sigRow.height = 20;
   const sigLabels = getSignatureLabels(employee);
 
-  if (sigLabels.center) {
+  if (numCols >= 5) {
     sigRow.getCell(2).value = sigLabels.left;
-    ws.mergeCells(`C${currentRowIdx}:D${currentRowIdx}`);
-    sigRow.getCell(3).value = sigLabels.center;
-    sigRow.getCell(5).value = sigLabels.right;
-
     sigRow.getCell(2).font = { name: 'Arial', size: 11, bold: true };
-    sigRow.getCell(3).font = { name: 'Arial', size: 11, bold: true };
-    sigRow.getCell(5).font = { name: 'Arial', size: 11, bold: true };
-
     sigRow.getCell(2).alignment = { horizontal: 'center', vertical: 'middle' };
-    sigRow.getCell(3).alignment = { horizontal: 'center', vertical: 'middle' };
-    sigRow.getCell(5).alignment = { horizontal: 'center', vertical: 'middle' };
+
+    if (sigLabels.center) {
+      const midColStart = 3;
+      const midColEnd = Math.max(3, numCols - 2);
+      if (midColStart < midColEnd) {
+        ws.mergeCells(`${getColLetter(midColStart)}${currentRowIdx}:${getColLetter(midColEnd)}${currentRowIdx}`);
+      }
+      const midCell = sigRow.getCell(midColStart);
+      midCell.value = sigLabels.center;
+      midCell.font = { name: 'Arial', size: 11, bold: true };
+      midCell.alignment = { horizontal: 'center', vertical: 'middle' };
+
+      const rightCell = sigRow.getCell(numCols - 1);
+      rightCell.value = sigLabels.right;
+      rightCell.font = { name: 'Arial', size: 11, bold: true };
+      rightCell.alignment = { horizontal: 'center', vertical: 'middle' };
+    } else {
+      const rightCell = sigRow.getCell(numCols - 1);
+      rightCell.value = sigLabels.right;
+      rightCell.font = { name: 'Arial', size: 11, bold: true };
+      rightCell.alignment = { horizontal: 'center', vertical: 'middle' };
+    }
   } else {
-    sigRow.getCell(2).value = sigLabels.left;
-    sigRow.getCell(4).value = sigLabels.right;
+    // If fewer than 5 columns selected
+    sigRow.getCell(1).value = sigLabels.left;
+    sigRow.getCell(1).font = { name: 'Arial', size: 11, bold: true };
+    sigRow.getCell(1).alignment = { horizontal: 'center', vertical: 'middle' };
 
-    sigRow.getCell(2).font = { name: 'Arial', size: 11, bold: true };
-    sigRow.getCell(4).font = { name: 'Arial', size: 11, bold: true };
-
-    sigRow.getCell(2).alignment = { horizontal: 'center', vertical: 'middle' };
-    sigRow.getCell(4).alignment = { horizontal: 'center', vertical: 'middle' };
+    const endCell = sigRow.getCell(numCols);
+    endCell.value = sigLabels.right;
+    endCell.font = { name: 'Arial', size: 11, bold: true };
+    endCell.alignment = { horizontal: 'center', vertical: 'middle' };
   }
 }
 
@@ -479,7 +546,9 @@ export function exportPlanillasPdf(
   monthStr: string,
   attendances: Attendance[],
   holidays: Holiday[],
+  columns: ExportColumnKey[] = ['date', 'employee', 'position', 'entryTime', 'exitTime', 'status'],
 ) {
+  const activeColumns = columns.length > 0 ? columns : (['date', 'employee', 'position', 'entryTime', 'exitTime', 'status'] as ExportColumnKey[]);
   const [yearStr] = monthStr.split('-');
   const monthName = getMonthName(monthStr);
 
@@ -488,20 +557,24 @@ export function exportPlanillasPdf(
       const records = buildEmployeeMonthDays(employee, monthStr, attendances, holidays);
       const sigLabels = getSignatureLabels(employee);
 
+      const theadHtml = activeColumns
+        .map((colKey) => `<th>${escapeHtml(AVAILABLE_COLUMNS[colKey]?.label ?? colKey)}</th>`)
+        .join('');
+
       const rowsHtml = records
         .map((rec) => {
-          const [y, m, d] = rec.dateStr.split('-');
-          const formattedDate = `${d}/${m}/${y}`;
-          return `
-            <tr>
-              <td>${formattedDate}</td>
-              <td style="text-align: center;">${escapeHtml(rec.employeeName)}</td>
-              <td>${escapeHtml(rec.cargo)}</td>
-              <td>${escapeHtml(rec.entryTime)}</td>
-              <td>${escapeHtml(rec.exitTime)}</td>
-              <td>${escapeHtml(rec.status)}</td>
-            </tr>
-          `;
+          const cells = activeColumns
+            .map((colKey) => {
+              let val = String(rec[colKey as keyof DayRecord] ?? '-');
+              if (colKey === 'date') {
+                const [y, m, d] = rec.dateStr.split('-');
+                val = `${d}/${m}/${y}`;
+              }
+              return `<td>${escapeHtml(val)}</td>`;
+            })
+            .join('');
+
+          return `<tr>${cells}</tr>`;
         })
         .join('');
 
@@ -554,12 +627,7 @@ export function exportPlanillasPdf(
           <table class="planilla-table">
             <thead>
               <tr>
-                <th style="width: 15%;">Fecha</th>
-                <th style="width: 25%;">Nombre completo</th>
-                <th style="width: 20%;">Cargo</th>
-                <th style="width: 14%;">Hora entrada</th>
-                <th style="width: 14%;">Hora salida</th>
-                <th style="width: 12%;">Estado</th>
+                ${theadHtml}
               </tr>
             </thead>
             <tbody>
